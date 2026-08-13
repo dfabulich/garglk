@@ -124,6 +124,7 @@ public:
     int exec();
     void note_window_closed(GameWindow *window);
     void adopt_window(std::unique_ptr<GameWindow> window);
+    void quit_all();
 
 private:
     Session();
@@ -258,7 +259,8 @@ GameWindow::GameWindow(QLocalSocket *socket, QWidget *parent) :
     m_socket->setParent(this);
     if (gli_conf_menu_bar) {
         setup_file_menu(this, m_settings,
-                [](const QString &game) { Session::instance().open_game(game); });
+                [](const QString &game) { Session::instance().open_game(game); },
+                [] { Session::instance().quit_all(); });
     } else {
         menuBar()->hide();
     }
@@ -629,6 +631,22 @@ void Session::note_window_closed(GameWindow *window)
         it->second.release();
         m_windows.erase(it);
         window->deleteLater();
+    }
+    if (m_windows.empty()) {
+        QApplication::quit();
+    }
+}
+
+void Session::quit_all()
+{
+    // Snapshot pointers: closeEvent mutates m_windows.
+    std::vector<GameWindow *> windows;
+    windows.reserve(m_windows.size());
+    for (auto &entry : m_windows) {
+        windows.push_back(entry.first);
+    }
+    for (auto *window : windows) {
+        window->close();
     }
     if (m_windows.empty()) {
         QApplication::quit();
