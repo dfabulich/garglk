@@ -202,6 +202,13 @@ glui32 glk_gestalt_ext(glui32 id, glui32 val, glui32 *arr,
 
         case gestalt_GarglkText:
             return TRUE;
+
+        case gestalt_Map:
+#ifdef GLK_MODULE_MAP
+            return TRUE;
+#else
+            return FALSE;
+#endif
 #endif
 
         default:

@@ -24,6 +24,7 @@
 
 #include "glk.h"
 #include "garglk.h"
+#include "map.h"
 
 // limit number of text rows/columns
 #define MAX_TEXT_COLUMNS 255

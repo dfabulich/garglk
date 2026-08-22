@@ -1,0 +1,7 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+    <qresource prefix="/icons">
+        <file alias="zoom-in.svg">zoom-in.svg</file>
+        <file alias="zoom-out.svg">zoom-out.svg</file>
+    </qresource>
+</RCC>

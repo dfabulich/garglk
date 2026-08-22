@@ -34,6 +34,7 @@
 
 #include "glk.h"
 #include "garglk.h"
+#include "map.h"
 #include "garversion.h"
 
 #include "format.h"
@@ -135,10 +136,10 @@ static void winhandler(int signal);
 
 @end
 
-static NSObject<GargoyleApp> *gargoyle = nullptr;
+NSObject<GargoyleApp> *gargoyle = nullptr;
 static GargoyleMonitor *monitor = nullptr;
 static NSString *cliptext = nullptr;
-static pid_t processID = 0;
+pid_t processID = 0;
 
 static bool gli_refresh_needed = true;
 
@@ -176,6 +177,7 @@ void garglk::winwarning(const std::string &title, const std::string &msg)
 
 void winexit()
 {
+    gli_map_ui_shutdown();
     [gargoyle closeWindow:processID];
     gli_exit(0);
 }
@@ -1040,17 +1042,28 @@ bool garglk::winisfullscreen()
     return [gargoyle isFullScreen: processID];
 }
 
+static void gli_map_poll_pending_events()
+{
+    unsigned mapSubtype = 0, mapPayload = 0;
+    if ([gargoyle retrieveMapEvent:processID subtype:&mapSubtype payload:&mapPayload]) {
+        gli_map_post_event(mapSubtype, mapPayload);
+    }
+}
+
 void gli_select(event_t *event, bool polled)
 {
     NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
 
     gli_event_clearevent(event);
 
+    gli_map_poll_pending_events();
+
     winpoll();
     gli_dispatch_event(event, polled);
 
     if (event->type == evtype_None && !polled) {
         while (![monitor timeout]) {
+            gli_map_poll_pending_events();
             winloop();
             gli_dispatch_event(event, polled);
 

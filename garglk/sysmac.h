@@ -125,10 +125,26 @@
 
 - (void) setCursor: (unsigned int) cursor;
 
+- (void) mapPresent:(pid_t)processID flags:(int)flags focusLeft:(int)fl focusTop:(int)ft focusWidth:(int)fw focusHeight:(int)fh data:(NSData *)data;
+- (void) mapPresentImage:(pid_t)processID flags:(int)flags focusLeft:(int)fl focusTop:(int)ft focusWidth:(int)fw focusHeight:(int)fh png:(NSData *)png data:(NSData *)data;
+- (void) mapSetHyperlinks:(pid_t)processID data:(NSData *)data;
+- (void) mapOverlay:(pid_t)processID overlayId:(unsigned)overlayId left:(int)left top:(int)top width:(unsigned)width height:(unsigned)height zindex:(unsigned)zindex linkId:(unsigned)linkId color:(unsigned)color isFill:(BOOL)isFill png:(NSData *)png label:(NSString *)label;
+- (void) mapOverlayMove:(pid_t)processID overlayId:(unsigned)overlayId left:(int)left top:(int)top width:(unsigned)width height:(unsigned)height zindex:(unsigned)zindex;
+- (void) mapOverlayClear:(pid_t)processID overlayId:(unsigned)overlayId;
+- (void) mapOverlayClearAll:(pid_t)processID;
+- (void) mapClose:(pid_t)processID;
+- (void) mapSetFocus:(pid_t)processID focusLeft:(int)fl focusTop:(int)ft focusWidth:(unsigned)fw focusHeight:(unsigned)fh;
+- (void) mapClearFocus:(pid_t)processID;
+- (void) setMapEventRequest:(pid_t)processID enabled:(BOOL)enabled;
+- (BOOL) retrieveMapEvent:(pid_t)processID subtype:(unsigned *)subtype payload:(unsigned *)payload;
+
 - (BOOL) isFullScreen: (pid_t) processID;
 - (void) toggleFullScreen: (pid_t) processID;
 
 @end
+
+extern NSObject<GargoyleApp> *gargoyle;
+extern pid_t processID;
 
 NSString *get_qt_plist_path();
 
