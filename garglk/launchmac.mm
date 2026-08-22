@@ -19,6 +19,7 @@
 #include "format.h"
 
 #include "garglk.h"
+#include "map.h"
 #include "garversion.h"
 #include "launcher.h"
 
@@ -34,6 +35,9 @@
 #include <libproc.h>
 #include <unistd.h>
 #import "sysmac.h"
+#import "mapwindow-cocoa.h"
+
+#include "cheapglk/glk.h"
 
 static const char *AppName = "Gargoyle " GARGOYLE_VERSION;
 
@@ -867,6 +871,7 @@ static void maybe_set_save_dir(NSSavePanel *panel, NSString *savedir)
 
 - (void) closeWindow: (pid_t) processID
 {
+    [self mapClose:processID];
     GargoyleWindow *window = [windows objectForKey: [NSNumber numberWithInt: processID]];
 
     if (window) {
@@ -1088,6 +1093,8 @@ static void maybe_set_save_dir(NSSavePanel *panel, NSString *savedir)
         garglk::winwarning("Warning", e.what());
     }
 }
+
+#import "map-launchmac.inl"
 
 @end
 

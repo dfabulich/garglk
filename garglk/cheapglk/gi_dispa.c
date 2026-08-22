@@ -12,6 +12,10 @@
 #include "glk.h"
 #include "gi_dispa.h"
 
+#ifdef GLK_MODULE_MAP
+#include <string.h>
+#endif
+
 #ifndef NULL
 #define NULL 0
 #endif
@@ -39,6 +43,9 @@ static gidispatch_intconst_t intconstant_table[] = {
     { "evtype_CharInput", (2) },
     { "evtype_Hyperlink", (8) },
     { "evtype_LineInput", (3) },
+#ifdef GLK_MODULE_MAP
+    { "evtype_Map", (0x1105) },
+#endif
     { "evtype_MouseInput", (4) },
     { "evtype_None", (0) },
     { "evtype_Redraw", (6) },
@@ -79,6 +86,9 @@ static gidispatch_intconst_t intconstant_table[] = {
     { "gestalt_LineInputEcho", (17) },
     { "gestalt_LineTerminatorKey", (19) },
     { "gestalt_LineTerminators", (18) },
+#ifdef GLK_MODULE_MAP
+    { "gestalt_Map", (0x1104) },
+#endif
     { "gestalt_MouseInput", (4) },
     { "gestalt_ResourceStream", (22) },
     { "gestalt_Sound", (8) },
@@ -343,6 +353,22 @@ static gidispatch_function_t function_table[] = {
     { 0x1102, garglk_set_reversevideo, "garglk_set_reversevideo" },
     { 0x1103, garglk_set_reversevideo_stream, "garglk_set_reversevideo_stream" },
 #endif /* GLK_MODULE_GARGLKTEXT */
+
+#ifdef GLK_MODULE_MAP
+    { 0x1203, glk_map_present_svg, "map_present_svg" },
+    { 0x1204, glk_map_close, "map_close" },
+    { 0x1205, glk_map_set_focus, "map_set_focus" },
+    { 0x1206, glk_map_clear_focus, "map_clear_focus" },
+    { 0x1207, glk_request_map_event, "request_map_event" },
+    { 0x1208, glk_cancel_map_event, "cancel_map_event" },
+    { 0x1209, glk_map_present_image, "map_present_image" },
+    { 0x120A, glk_map_set_hyperlinks, "map_set_hyperlinks" },
+    { 0x120B, glk_map_overlay, "map_overlay" },
+    { 0x120C, glk_map_overlay_move, "map_overlay_move" },
+    { 0x120D, glk_map_overlay_clear, "map_overlay_clear" },
+    { 0x120E, glk_map_overlay_clear_all, "map_overlay_clear_all" },
+    { 0x120F, glk_map_fill_rect, "map_fill_rect" },
+#endif /* GLK_MODULE_MAP */
 };
 
 glui32 gidispatch_count_classes()
@@ -706,6 +732,36 @@ char *gidispatch_prototype(glui32 funcnum)
         case 0x1103: /* garglk_set_reversevideo_stream */
             return "2QbIu:";
 #endif /* GLK_MODULE_GARGLKTEXT */
+
+#ifdef GLK_MODULE_MAP
+        case 0x1203: /* map_present_svg */
+            /* Hyperlink struct array is C-only; dispatch presents with none. */
+            return "7>+#CnIuIuIsIsIuIu:Iu";
+        case 0x1204: /* map_close */
+            return "0:";
+        case 0x1205: /* map_set_focus */
+            return "4IsIsIuIu:";
+        case 0x1206: /* map_clear_focus */
+            return "0:";
+        case 0x1207: /* request_map_event */
+            return "0:";
+        case 0x1208: /* cancel_map_event */
+            return "0:";
+        case 0x1209: /* map_present_image */
+            return "7IuIuIuIsIsIuIu:Iu";
+        case 0x120A: /* map_set_hyperlinks */
+            return "2>+#IuIu:";
+        case 0x120B: /* map_overlay */
+            return "8IuIsIsIuIuIuIu>+#Cn:Iu";
+        case 0x120C: /* map_overlay_move */
+            return "6IuIsIsIuIuIu:Iu";
+        case 0x120D: /* map_overlay_clear */
+            return "1Iu:Iu";
+        case 0x120E: /* map_overlay_clear_all */
+            return "0:Iu";
+        case 0x120F: /* map_fill_rect */
+            return "6IuIsIsIuIuIu:Iu";
+#endif /* GLK_MODULE_MAP */
 
         default:
             return NULL;
@@ -1563,6 +1619,141 @@ void gidispatch_call(glui32 funcnum, glui32 numargs, gluniversal_t *arglist)
             garglk_set_reversevideo_stream( arglist[0].opaqueref, arglist[1].uint );
             break;
 #endif /* GLK_MODULE_GARGLKTEXT */
+
+#ifdef GLK_MODULE_MAP
+        case 0x1203: /* map_present_svg */
+            /* Hyperlink struct array is C-only; dispatch presents with none.
+               [0]=ptrflag [1]=array [2]=len [3]=flags [4]=bgcolor
+               [5..8]=focus [9]=return  (or shorter if null array). */
+            if (arglist[0].ptrflag) {
+                arglist[9].uint = glk_map_present_svg(arglist[1].array,
+                    arglist[2].uint, arglist[3].uint, arglist[4].uint,
+                    arglist[5].sint, arglist[6].sint,
+                    arglist[7].uint, arglist[8].uint, NULL, 0);
+            } else {
+                arglist[7].uint = glk_map_present_svg(NULL, 0,
+                    arglist[1].uint, arglist[2].uint,
+                    arglist[3].sint, arglist[4].sint,
+                    arglist[5].uint, arglist[6].uint, NULL, 0);
+            }
+            break;
+        case 0x1204: /* map_close */
+            glk_map_close();
+            break;
+        case 0x1205: /* map_set_focus */
+            glk_map_set_focus(arglist[0].sint, arglist[1].sint,
+                arglist[2].uint, arglist[3].uint);
+            break;
+        case 0x1206: /* map_clear_focus */
+            glk_map_clear_focus();
+            break;
+        case 0x1207: /* request_map_event */
+            glk_request_map_event();
+            break;
+        case 0x1208: /* cancel_map_event */
+            glk_cancel_map_event();
+            break;
+        case 0x1209: /* map_present_image */
+            arglist[7].uint = glk_map_present_image(arglist[0].uint, arglist[1].uint,
+                arglist[2].uint, arglist[3].sint, arglist[4].sint,
+                arglist[5].uint, arglist[6].uint, NULL, 0);
+            break;
+        case 0x120A: /* map_set_hyperlinks */
+            if (!arglist[0].ptrflag) {
+                glk_map_set_hyperlinks(NULL, 0);
+            } else {
+                glui32 *words = (glui32 *)arglist[1].array;
+                glui32 nwords = arglist[2].uint;
+                glui32 nlinks = arglist[3].uint;
+                glk_maphyperlink_t links[64];
+                glk_mappoint_t pts[64 * 32];
+                char labelbuf[64][256];
+                glui32 wi = 0, li, out = 0, p, npoints, labellen, b, id;
+
+                if (nlinks > 64) {
+                    nlinks = 64;
+                }
+                if (words == NULL) {
+                    nlinks = 0;
+                }
+                for (li = 0; li < nlinks; li++) {
+                    if (wi + 2 > nwords) {
+                        break;
+                    }
+                    id = words[wi++];
+                    npoints = words[wi++];
+                    if (npoints < 3 || npoints > 32 || wi + npoints * 2 > nwords) {
+                        break;
+                    }
+                    for (p = 0; p < npoints; p++) {
+                        pts[out * 32 + p].x = (glsi32)words[wi++];
+                        pts[out * 32 + p].y = (glsi32)words[wi++];
+                    }
+                    if (wi >= nwords) {
+                        break;
+                    }
+                    labellen = words[wi++];
+                    if (labellen >= sizeof(labelbuf[0]) || wi + labellen > nwords) {
+                        break;
+                    }
+                    for (b = 0; b < labellen; b++) {
+                        glui32 ch = words[wi++];
+                        if (ch > 255) {
+                            ch = '?';
+                        }
+                        labelbuf[out][b] = (char)ch;
+                    }
+                    labelbuf[out][labellen] = '\0';
+                    if (id == 0) {
+                        continue;
+                    }
+                    links[out].id = id;
+                    links[out].npoints = npoints;
+                    links[out].points = &pts[out * 32];
+                    links[out].label = labellen ? labelbuf[out] : NULL;
+                    out++;
+                }
+                glk_map_set_hyperlinks(out ? links : NULL, out);
+            }
+            break;
+        case 0x120B: /* map_overlay */
+            {
+                char linklabelbuf[256];
+                const char *linklabel = NULL;
+                if (arglist[7].ptrflag) {
+                    glui32 linklabellen = arglist[9].uint;
+                    char *bytes = (char *)arglist[8].array;
+                    if (linklabellen > 0 && bytes) {
+                        if (linklabellen > sizeof(linklabelbuf) - 1) {
+                            linklabellen = sizeof(linklabelbuf) - 1;
+                        }
+                        memcpy(linklabelbuf, bytes, linklabellen);
+                        linklabelbuf[linklabellen] = '\0';
+                        linklabel = linklabelbuf;
+                    } else {
+                        linklabel = "";
+                    }
+                }
+                arglist[10].uint = glk_map_overlay(arglist[0].uint, arglist[1].sint,
+                    arglist[2].sint, arglist[3].uint, arglist[4].uint, arglist[5].uint,
+                    arglist[6].uint, linklabel);
+            }
+            break;
+        case 0x120C: /* map_overlay_move */
+            arglist[6].uint = glk_map_overlay_move(arglist[0].uint, arglist[1].sint,
+                arglist[2].sint, arglist[3].uint, arglist[4].uint, arglist[5].uint);
+            break;
+        case 0x120D: /* map_overlay_clear */
+            arglist[1].uint = glk_map_overlay_clear(arglist[0].uint);
+            break;
+        case 0x120E: /* map_overlay_clear_all */
+            arglist[0].uint = glk_map_overlay_clear_all();
+            break;
+        case 0x120F: /* map_fill_rect */
+            arglist[6].uint = glk_map_fill_rect(arglist[0].uint, arglist[1].sint,
+                arglist[2].sint, arglist[3].uint, arglist[4].uint, arglist[5].uint);
+            break;
+#endif /* GLK_MODULE_MAP */
 
         default:
             /* do nothing */

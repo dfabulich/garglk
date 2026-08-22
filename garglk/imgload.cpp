@@ -92,6 +92,55 @@ std::shared_ptr<picture_t> gli_picture_retrieve(unsigned long id, bool scaled)
     }
 }
 
+static bool gli_picture_fetch_raw(unsigned long id, std::vector<unsigned char> &buf, glui32 &chunktype)
+{
+    if (giblorb_get_resource_map() != nullptr) {
+        if (!giblorb_copy_resource(giblorb_ID_Pict, id, chunktype, buf)) {
+            return false;
+        }
+        return true;
+    }
+
+    const auto &resource_map = gli_get_resource_map(giblorb_ID_Pict);
+    if (!resource_map.empty()) {
+        try {
+            buf = resource_map.at(id);
+        } catch (const std::out_of_range &) {
+            return false;
+        }
+    } else {
+        auto filename = Format("{}/PIC{}", gli_workdir, id);
+
+        if (!garglk::read_file(filename, buf)) {
+            return false;
+        }
+    }
+
+    if (buf.size() < 8) {
+        return false;
+    }
+
+    static constexpr std::array<unsigned char, 8> png_sig{
+        137, 80, 78, 71, 13, 10, 26, 10
+    };
+
+    if (std::equal(png_sig.begin(), png_sig.end(), buf.begin())) {
+        chunktype = giblorb_ID_PNG;
+    } else if (buf[0] == 0xFF && buf[1] == 0xD8 && buf[2] == 0xFF) {
+        chunktype = giblorb_ID_JPEG;
+    } else {
+        gli_strict_warning(Format("unable to load image {}: unknown format", id));
+        return false;
+    }
+
+    return true;
+}
+
+bool gli_picture_copy_raw(unsigned long id, std::vector<unsigned char> &buf, glui32 &chunktype)
+{
+    return gli_picture_fetch_raw(id, buf, chunktype);
+}
+
 std::shared_ptr<picture_t> gli_picture_load(unsigned long id)
 {
     glui32 chunktype;
@@ -103,43 +152,8 @@ std::shared_ptr<picture_t> gli_picture_load(unsigned long id)
 
     std::vector<unsigned char> buf;
 
-    if (giblorb_get_resource_map() != nullptr) {
-        if (!giblorb_copy_resource(giblorb_ID_Pict, id, chunktype, buf)) {
-            return nullptr;
-        }
-    } else {
-        const auto &resource_map = gli_get_resource_map(giblorb_ID_Pict);
-        if (!resource_map.empty()) {
-            try {
-                buf = resource_map.at(id);
-            } catch (const std::out_of_range &) {
-                return nullptr;
-            }
-        } else {
-            auto filename = Format("{}/PIC{}", gli_workdir, id);
-
-            if (!garglk::read_file(filename, buf)) {
-                return nullptr;
-            }
-        }
-
-        if (buf.size() < 8) {
-            return nullptr;
-        }
-
-        static constexpr std::array<unsigned char, 8> png_sig{
-            137, 80, 78, 71, 13, 10, 26, 10
-        };
-
-        if (std::equal(png_sig.begin(), png_sig.end(), buf.begin())) {
-            chunktype = giblorb_ID_PNG;
-        } else if (buf[0] == 0xFF && buf[1] == 0xD8 && buf[2] == 0xFF) {
-            chunktype = giblorb_ID_JPEG;
-        } else {
-            // Not a readable file. Forget it.
-            gli_strict_warning(Format("unable to load image {}: unknown format", id));
-            return nullptr;
-        }
+    if (!gli_picture_fetch_raw(id, buf, chunktype)) {
+        return nullptr;
     }
 
     static const std::unordered_map<int, std::function<Canvas<4>(const std::vector<unsigned char> &)>> loaders = {

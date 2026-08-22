@@ -95,6 +95,7 @@ set_property(SOURCE theme.cpp APPEND PROPERTY COMPILE_DEFINITIONS THEME_DARK_H="
 
 if(INTERFACE STREQUAL "QT")
     set(CMAKE_AUTOMOC ON)
+    set(CMAKE_AUTORCC ON)
     set_property(SOURCE ${GARGLKINI_CXX} ${THEME_DARK_CXX} ${THEME_DARK_H} ${THEME_LIGHT_CXX} ${THEME_LIGHT_H} PROPERTY SKIP_AUTOMOC ON)
 
     if(NOT WITH_NATIVE_FILE_DIALOGS)
@@ -109,7 +110,7 @@ else()
 endif()
 
 add_library(garglk-common OBJECT babeldata.cpp style.cpp config.cpp draw.cpp event.cpp
-    garglk.cpp imgload.cpp ${IMGLOAD} imgscale.cpp theme.cpp winblank.cpp window.cpp
+    garglk.cpp imgload.cpp ${IMGLOAD} imgscale.cpp map.cpp theme.cpp winblank.cpp window.cpp
     wingfx.cpp wingrid.cpp winmask.cpp winpair.cpp wintext.cpp zbleep.cpp
     ${GARGLKINI_CXX} ${THEME_DARK_CXX} ${THEME_LIGHT_CXX}
 
@@ -145,10 +146,10 @@ if(APPIMAGE)
 endif()
 
 if(INTERFACE STREQUAL "COCOA")
-    target_sources(garglk-common PRIVATE sysmac.mm)
+    target_sources(garglk-common PRIVATE sysmac.mm map-cocoa-bridge.mm)
     target_compile_options(garglk-common PRIVATE "-Wno-deprecated-declarations")
 else()
-    target_sources(garglk-common PRIVATE sysqt.cpp)
+    target_sources(garglk-common PRIVATE sysqt.cpp mapwindow-qt.cpp icons/mapicons.qrc)
     find_package(Threads REQUIRED)
     target_link_libraries(garglk-common PRIVATE ${CMAKE_THREAD_LIBS_INIT})
 endif()
@@ -201,7 +202,7 @@ if(WITH_LAUNCHER)
         target_compile_definitions(gargoyle PRIVATE WITH_SCARIER=1)
     endif()
     if(${INTERFACE} STREQUAL "COCOA")
-        target_sources(gargoyle PRIVATE launchmac.mm)
+        target_sources(gargoyle PRIVATE launchmac.mm mapwindow-cocoa.mm)
         target_compile_options(gargoyle PRIVATE "-Wno-deprecated-declarations")
     else()
         target_sources(gargoyle PRIVATE launchqt.cpp)
@@ -226,8 +227,8 @@ else()
     set(QT_VERSION "6" CACHE STRING "Specify which major Qt version to use (5 or 6)")
     option(WITH_KDE "Use KDE Frameworks (improves discovery of a text editor for config file editing)" OFF)
 
-    find_package(Qt${QT_VERSION} COMPONENTS Widgets REQUIRED CONFIG)
-    target_link_libraries(garglk-common PRIVATE Qt${QT_VERSION}::Widgets)
+    find_package(Qt${QT_VERSION} COMPONENTS Widgets Svg REQUIRED CONFIG)
+    target_link_libraries(garglk-common PRIVATE Qt${QT_VERSION}::Widgets Qt${QT_VERSION}::Svg)
 
     # QDBus exists on Windows, but almost nobody will be running DBus
     # there, so using QDBus would effectively just require shipping the
