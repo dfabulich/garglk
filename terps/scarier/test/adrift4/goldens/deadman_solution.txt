@@ -1,0 +1,51 @@
+roll over body
+x body
+get all
+get bullets
+get gun
+load gun
+shoot locker
+open locker
+x locker
+get kit
+open kit
+get scissors
+open panel with scissors
+x console
+get all from console
+turn camera to camera 1
+get bandage
+wear bandage on neck
+get syringe
+use syringe
+use radio
+z
+z
+z
+z
+z
+z
+z
+z
+z
+z
+z
+z
+z
+z
+z
+z
+z
+z
+z
+z
+z
+z
+z
+stand
+open door
+get axe
+chop off hand with axe
+get hand
+put hand on green plate
+put hand on green plate

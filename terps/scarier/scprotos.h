@@ -143,6 +143,7 @@ extern scr_bool scr_is_congruential_random (void);
 extern void scr_seed_random (scr_uint new_seed);
 extern scr_int scr_rand (void);
 extern scr_int scr_randomint (scr_int low, scr_int high);
+extern scr_int scr_randomint_exclusive (scr_int low, scr_int high);
 extern scr_bool scr_strempty (const scr_char *string);
 extern scr_char *scr_trim_string (scr_char *string);
 extern scr_char *scr_normalize_string (scr_char *string);
@@ -164,6 +165,8 @@ extern void taf_destroy (scr_tafref_t taf);
 extern scr_tafref_t taf_create (scr_read_callbackref_t callback, void *opaque);
 extern scr_tafref_t taf_create_tas (scr_read_callbackref_t callback,
                                    void *opaque);
+extern scr_tafref_t taf_create_tas_raw (scr_read_callbackref_t callback,
+                                        void *opaque);
 extern void taf_first_line (scr_tafref_t taf);
 extern const scr_char *taf_next_line (scr_tafref_t taf);
 extern scr_bool taf_more_lines (scr_tafref_t taf);
@@ -214,6 +217,8 @@ extern scr_bool prop_get_global_boolean (scr_prop_setref_t bundle,
                                         const scr_char *name);
 extern const scr_char *prop_get_global_string (scr_prop_setref_t bundle,
                                               const scr_char *name);
+/* bundle["Version"] -- the TAF_VERSION_* constant of the parsed .taf. */
+extern scr_int prop_get_taf_version (scr_prop_setref_t bundle);
 /* bundle[class_][index_][name] -- one field of one indexed entity. */
 extern scr_int prop_get_indexed_integer (scr_prop_setref_t bundle,
                                         const scr_char *class_,
@@ -311,6 +316,7 @@ extern void pf_buffer_string (scr_filterref_t filter,
                               const scr_char *string);
 extern void pf_buffer_character (scr_filterref_t filter,
                                  scr_char character);
+extern void pf_buffer_integer (scr_filterref_t filter, scr_int value);
 extern void pf_buffer_paragraph (scr_filterref_t filter,
                                  const scr_char *string);
 extern void pf_buffer_paragraph_line (scr_filterref_t filter,
@@ -394,6 +400,10 @@ extern scr_int gs_playerposition (scr_gameref_t gs);
 extern scr_int gs_playerparent (scr_gameref_t gs);
 extern scr_int gs_carried_weight (scr_gameref_t gs);
 extern scr_int gs_carried_size (scr_gameref_t gs);
+extern void gs_set_carried_suspend (scr_gameref_t gs, scr_bool flag);
+extern void gs_carried_adjust (scr_gameref_t gs, scr_int weight, scr_int size);
+extern scr_bool gs_runner_possessed (scr_gameref_t gs, scr_int object);
+extern void gs_carried_recompute (scr_gameref_t gs);
 extern scr_int gs_event_count (scr_gameref_t gs);
 extern void gs_set_event_state (scr_gameref_t gs, scr_int event, scr_int state);
 extern void gs_set_event_time (scr_gameref_t gs, scr_int event, scr_int etime);
@@ -424,6 +434,9 @@ extern scr_bool gs_object_unmoved (scr_gameref_t gs, scr_int object);
 extern scr_bool gs_object_static_unmoved (scr_gameref_t gs, scr_int object);
 extern scr_int gs_object_position (scr_gameref_t gs, scr_int object);
 extern scr_int gs_object_parent (scr_gameref_t gs, scr_int object);
+extern scr_int gs_object_runner_parent (scr_gameref_t gs, scr_int object);
+extern void gs_set_object_runner_parent (scr_gameref_t gs, scr_int object,
+                                         scr_int runner_parent);
 extern void gs_object_move_onto (scr_gameref_t gs, scr_int object, scr_int onto);
 extern void gs_object_move_into (scr_gameref_t gs, scr_int object, scr_int into);
 extern void gs_object_make_hidden (scr_gameref_t gs, scr_int object);
@@ -479,6 +492,7 @@ extern void task_forget_game (const void *game);
 extern void ser_forget_game (const void *game);
 extern void evt_forget_game (const void *game);
 extern void run_forget_game (const void *game);
+extern void scmap_forget_game (const void *game);
 
 /* Library perspective enumeration and functions. */
 enum
@@ -499,6 +513,7 @@ extern const scr_char *lib_direction_name (scr_int direction);
 extern void lib_print_room_name (scr_gameref_t game, scr_int room);
 extern void lib_print_room_description (scr_gameref_t game, scr_int room);
 extern void lib_print_object_np (scr_gameref_t game, scr_int object);
+extern void lib_print_npc_np (scr_gameref_t game, scr_int npc);
 /* "I'm afraid you are dead!", or its first-person form for a pre-4.0 game. */
 extern const scr_char *lib_get_death_message (scr_gameref_t game);
 extern scr_bool lib_cmd_go_north (scr_gameref_t game);
@@ -538,6 +553,7 @@ extern scr_bool lib_cmd_statusline (scr_gameref_t game);
 extern scr_bool lib_cmd_version (scr_gameref_t game);
 extern scr_bool lib_cmd_look (scr_gameref_t game);
 extern scr_bool lib_cmd_print_room_exits (scr_gameref_t game);
+extern void lib_print_room_exits (scr_gameref_t game, scr_int room);
 extern scr_bool lib_cmd_wait (scr_gameref_t game);
 extern scr_bool lib_cmd_wait_number (scr_gameref_t game);
 extern scr_bool lib_cmd_examine_self (scr_gameref_t game);
@@ -588,6 +604,11 @@ extern scr_bool lib_cmd_read_other (scr_gameref_t game);
 extern scr_bool lib_cmd_stand_on_object (scr_gameref_t game);
 extern scr_bool lib_cmd_stand_on_floor (scr_gameref_t game);
 extern scr_bool lib_cmd_attack_npc_with (scr_gameref_t game);
+extern scr_bool lib_cmd_slap_npc (scr_gameref_t game);
+extern scr_bool lib_cmd_slap_npc_with (scr_gameref_t game);
+extern scr_bool lib_cmd_slap_object (scr_gameref_t game);
+extern scr_bool lib_cmd_slap_other (scr_gameref_t game);
+extern scr_bool lib_cmd_slap_what (scr_gameref_t game);
 extern scr_bool lib_cmd_chop_npc (scr_gameref_t game);
 extern scr_bool lib_cmd_chop_npc_with (scr_gameref_t game);
 extern scr_bool lib_cmd_cut_npc (scr_gameref_t game);
@@ -608,8 +629,10 @@ extern scr_bool lib_cmd_sit_on_object (scr_gameref_t game);
 extern scr_bool lib_cmd_sit_on_floor (scr_gameref_t game);
 extern scr_bool lib_cmd_lie_on_object (scr_gameref_t game);
 extern scr_bool lib_cmd_lie_on_floor (scr_gameref_t game);
+extern scr_bool lib_cmd_get_on_object (scr_gameref_t game);
 extern scr_bool lib_cmd_get_off_object (scr_gameref_t game);
 extern scr_bool lib_cmd_get_off (scr_gameref_t game);
+extern scr_bool lib_cmd_get_down (scr_gameref_t game);
 extern scr_bool lib_cmd_save (scr_gameref_t game);
 extern scr_bool lib_cmd_restore (scr_gameref_t game);
 extern scr_bool lib_cmd_locate_object (scr_gameref_t game);
@@ -634,6 +657,8 @@ extern scr_bool lib_cmd_remove_what (scr_gameref_t game);
 extern scr_bool lib_cmd_drop_what (scr_gameref_t game);
 extern scr_bool lib_cmd_wear_what (scr_gameref_t game);
 extern scr_bool lib_cmd_profanity (scr_gameref_t game);
+extern scr_bool lib_cmd_profanity_390 (scr_gameref_t game);
+extern scr_bool lib_cmd_profanity_pre_400 (scr_gameref_t game);
 extern scr_bool lib_cmd_examine_all (scr_gameref_t game);
 extern scr_bool lib_cmd_examine_other (scr_gameref_t game);
 extern scr_bool lib_cmd_locate_other (scr_gameref_t game);
@@ -642,6 +667,11 @@ extern scr_bool lib_cmd_dos_like (scr_gameref_t game);
 extern scr_bool lib_cmd_ask_object (scr_gameref_t game);
 extern scr_bool lib_cmd_ask_npc (scr_gameref_t game);
 extern scr_bool lib_cmd_ask_other (scr_gameref_t game);
+extern scr_bool lib_cmd_talk_to_npc_about (scr_gameref_t game);
+extern scr_bool lib_cmd_talk_to_npc (scr_gameref_t game);
+extern scr_bool lib_cmd_talk_to_npc_pre_390 (scr_gameref_t game);
+extern scr_bool lib_cmd_just_a_direction (scr_gameref_t game);
+extern scr_bool lib_cmd_just_a_direction_pre_390 (scr_gameref_t game);
 extern scr_bool lib_cmd_block_object (scr_gameref_t game);
 extern scr_bool lib_cmd_block_other (scr_gameref_t game);
 extern scr_bool lib_cmd_block_what (scr_gameref_t game);
@@ -774,9 +804,9 @@ extern void res_cancel_resources (scr_gameref_t game);
 /* Game runner functions. */
 extern scr_bool run_game_task_commands (scr_gameref_t game,
                                        const scr_char *string);
+extern scr_bool run_task_run_by_index (scr_gameref_t game, scr_int task);
 extern void run_npc_walk_task (scr_gameref_t game, scr_int walktask);
 extern void run_event_task (scr_gameref_t game, scr_int eventtask);
-extern void run_task_command_dispatch (scr_gameref_t game, scr_int task);
 extern scr_bool run_does_command_match (scr_gameref_t game,
                                        const scr_char *string);
 extern scr_bool run_in_priority_pass (void);
@@ -847,8 +877,8 @@ extern void task_set_move_assist (scr_bool flag);
 extern scr_bool task_get_move_assist (void);
 
 /* Task restriction functions. */
-extern scr_bool restr_pass_task_object_state (scr_gameref_t game,
-                                             scr_int var1, scr_int var2);
+extern scr_bool restr_object_in_state (scr_gameref_t game,
+                                       scr_int object, scr_int var2);
 extern scr_bool restr_eval_task_restrictions (scr_gameref_t game,
                                              scr_int task, scr_bool *pass,
                                              const scr_char **fail_message);
@@ -918,6 +948,7 @@ extern scr_int obj_wearable_object (scr_gameref_t game, scr_int n);
 extern scr_int obj_standable_object (scr_gameref_t game, scr_int n);
 extern scr_int obj_get_size (scr_gameref_t game, scr_int object);
 extern scr_int obj_get_weight (scr_gameref_t game, scr_int object);
+extern scr_int obj_get_base_weight (scr_gameref_t game, scr_int object);
 extern scr_int obj_get_player_size_limit (scr_gameref_t game);
 extern scr_int obj_get_player_weight_limit (scr_gameref_t game);
 extern scr_bool obj_uses_burden_model (scr_gameref_t game);
@@ -939,6 +970,7 @@ extern void obj_debug_trace (scr_bool flag);
 
 /* Game serialization functions. */
 extern void ser_set_fast_compression (scr_bool fast);
+extern void ser_set_raw_memo (scr_bool raw);
 extern void ser_save_game (scr_gameref_t game,
                            scr_write_callbackref_t callback, void *opaque);
 extern void ser_save_game_to_file (scr_gameref_t game,

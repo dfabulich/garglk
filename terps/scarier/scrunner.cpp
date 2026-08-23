@@ -17,12 +17,6 @@
  * USA
  */
 
-/*
- * Module notes:
- *
- * o ...
- */
-
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -90,60 +84,127 @@ run_is_separator (const scr_char *line, scr_int posn)
 
 
 /*
+ * run_get_version()
+ *
+ * Return the game's TAF version from the bundle's top-level "Version"
+ * property -- a TAF_VERSION_* value, set once at parse time.
+ */
+static scr_int
+run_get_version (const scr_prop_setref_t bundle)
+{
+  scr_vartype_t vt_key;
+
+  vt_key.string = "Version";
+  return prop_get_integer (bundle, "I<-s", &vt_key);
+}
+
+
+/*
+ * run_squeeze_spaces()
+ *
+ * Copy 'string' into 'buffer' with every space dropped.  The 4.0 Runner
+ * squeezes the whole command this way before it looks for a task command
+ * function, which is what makes the spacing in the function free-form.
+ */
+static void
+run_squeeze_spaces (const scr_char *string, scr_char *buffer)
+{
+  const scr_char *cursor;
+  scr_char *out;
+
+  for (cursor = string, out = buffer; *cursor != NUL; cursor++)
+    {
+      if (*cursor != ' ')
+        *out++ = *cursor;
+    }
+  *out = NUL;
+}
+
+
+/*
  * run_is_task_function()
  *
- * Check for the presence of a command function in the first task command,
- * and action it if found.  This is a 4.0.42 compatibility hack -- at
- * present, only getdynfromroom() exists.  Returns TRUE if function found
- * and handled.
+ * Check for the presence of a command function in a task command, and action
+ * it if found.  This is a 4.0 feature -- at present, only getdynfromroom()
+ * exists.  Returns TRUE if function found and handled.
+ *
+ * The syntax and the selection are measured against the live 4.0 Runner (see
+ * RUNNER_TESTS_TODO.md section 9, probes GDA..GDR of
+ * test/adrift4/harness/make_arena_probe.py).  run400 squeezes every space out
+ * of the command, requires what is left to open "#%object%=getdynfromroom("
+ * and the *raw* command to end in ")" -- so "getdynfromroom(larder)x" is not
+ * a function at all -- then compares the squeezed argument to room names
+ * case-insensitively and takes the first non-static object standing directly
+ * in the room it finds.  Object order decides between candidates (a room
+ * holding "ring" then "gem" yields the ring), a room holding only statics
+ * yields nothing, and the reference set here survives the rest of the turn.
+ *
+ * Two run400 bugs are deliberately not reproduced, both of which can only
+ * lose a match the author meant to make:
+ *
+ *   deliberate: run400 scans rooms with "For r = 0 To roomCount - 1" over a
+ *     1-based array, so the game's *last* room can never be found.  Proved
+ *     live: "larder" as room 10 of 10 matched nothing, and started returning
+ *     its pie the moment a spare 11th room was appended.  (Its object loop
+ *     has no such fencepost -- an object added last is still found.)
+ *   deliberate: run400 squeezes the spaces out of the argument but compares
+ *     it against the unsqueezed room name, so no room whose name contains a
+ *     space is reachable -- not even by the manual's own worked example,
+ *     "getdynfromroom(The Park)".  We squeeze both sides, which keeps every
+ *     match run400 can make and adds the ones it drops.
+ *
+ * The 3.9 Runner has no getdynfromroom at all (not one occurrence in its
+ * P-code), hence the version gate.
  */
 static scr_bool
 run_is_task_function (const scr_char *pattern, scr_gameref_t game)
 {
+  static const scr_char *const FUNCTION = "#%object%=getdynfromroom(";
+
   const scr_prop_setref_t bundle = gs_get_bundle (game);
   const scr_var_setref_t vars = gs_get_vars (game);
-  scr_vartype_t vt_key[3];
-  scr_int room, object;
+  scr_int length, argument_length, room, object;
+  scr_char *argument;
 
-  /* Simple comparison against the one known task expression. */
-  std::vector<scr_char> argument (strlen (pattern) + 1);
-  if (sscanf (pattern, " # %%object%% = getdynfromroom (%[^)])",
-              argument.data ()) == 0)
+  if (run_get_version (bundle) < TAF_VERSION_400)
     return FALSE;
 
-  /*
-   * Compare the argument read in against known room names.
-   *
-   * TODO Is this simple room name comparison good enough?
-   */
-  vt_key[0].string = "Rooms";
+  /* The Runner tests the raw command's final character for the ")". */
+  length = strlen (pattern);
+  if (length == 0 || pattern[length - 1] != ')')
+    return FALSE;
+
+  std::vector<scr_char> squeezed (length + 1);
+  run_squeeze_spaces (pattern, squeezed.data ());
+  if (scr_strncasecmp (squeezed.data (), FUNCTION, strlen (FUNCTION)) != 0)
+    return FALSE;
+
+  /* Take the argument, dropping the ")" that the raw test guarantees. */
+  argument = squeezed.data () + strlen (FUNCTION);
+  argument_length = strlen (argument);
+  assert (argument_length > 0 && argument[argument_length - 1] == ')');
+  argument[argument_length - 1] = NUL;
+
+  /* Compare the argument read in against known room names. */
   for (room = 0; room < gs_room_count (game); room++)
     {
       const scr_char *name;
 
-      vt_key[1].integer = room;
-      vt_key[2].string = "Short";
-      name = prop_get_string (bundle, "S<-sis", vt_key);
-      if (scr_strcasecmp (name, argument.data ()) == 0)
+      name = prop_get_indexed_string (bundle, "Rooms", room, "Short");
+      std::vector<scr_char> compressed (strlen (name) + 1);
+      run_squeeze_spaces (name, compressed.data ());
+      if (scr_strcasecmp (compressed.data (), argument) == 0)
         break;
     }
   if (room == gs_room_count (game))
     return FALSE;
 
-  /*
-   * Select a dynamic object from the room.
-   *
-   * TODO What are the selection criteria supposed to be?  Here we use "on
-   * the floor".
-   */
-  vt_key[0].string = "Objects";
+  /* Select the first dynamic object standing on the room's floor. */
   for (object = 0; object < gs_object_count (game); object++)
     {
       scr_bool bstatic;
 
-      vt_key[1].integer = object;
-      vt_key[2].string = "Static";
-      bstatic = prop_get_boolean (bundle, "B<-sis", vt_key);
+      bstatic = prop_get_indexed_boolean (bundle, "Objects", object, "Static");
       if (!bstatic && obj_directly_in_room (game, object, room))
         break;
     }
@@ -175,8 +236,8 @@ static scr_commands_t MOVE_COMMANDS_4[] = {
   {"{go {to {the}}} [west/w]", lib_cmd_go_west},
   {"{go {to {the}}} [up/u]", lib_cmd_go_up},
   {"{go {to {the}}} [down/d]", lib_cmd_go_down},
-  {"{go {to {the}}} [in]", lib_cmd_go_in},
-  {"{go {to {the}}} [out/o]", lib_cmd_go_out},
+  {"{go {to {the}}} [in/inside/enter]", lib_cmd_go_in},
+  {"{go {to {the}}} [out/o/outside/exit]", lib_cmd_go_out},
   {NULL, NULL}
 };
 
@@ -188,8 +249,8 @@ static scr_commands_t MOVE_COMMANDS_8[] = {
   {"{go {to {the}}} [west/w]", lib_cmd_go_west},
   {"{go {to {the}}} [up/u]", lib_cmd_go_up},
   {"{go {to {the}}} [down/d]", lib_cmd_go_down},
-  {"{go {to {the}}} [in]", lib_cmd_go_in},
-  {"{go {to {the}}} [out/o]", lib_cmd_go_out},
+  {"{go {to {the}}} [in/inside/enter]", lib_cmd_go_in},
+  {"{go {to {the}}} [out/o/outside/exit]", lib_cmd_go_out},
   {"{go {to {the}}} [northeast/north-east/ne]", lib_cmd_go_northeast},
   {"{go {to {the}}} [southeast/south-east/se]", lib_cmd_go_southeast},
   {"{go {to {the}}} [northwest/north-west/nw]", lib_cmd_go_northwest},
@@ -200,16 +261,32 @@ static scr_commands_t MOVE_COMMANDS_8[] = {
 /* "Priority" library commands, may take precedence over the game. */
 static scr_commands_t PRIORITY_COMMANDS[] = {
 
-  /* Acquisition of and disposal of inventory. */
-  {"[[get/take/remove/extract] [all/everything] from/empty] %object%",
+  /* Acquisition of and disposal of inventory.
+   *
+   * Bare `pick %object%` is a genuine take synonym in both real Runners:
+   * run400 answers `pick pretty flowers` (Professor Von Witt) with "You take
+   * the pretty flowers from the window box.", and run390 answers `pick boat`
+   * (Marooned v1) with "You can't take the wrecked boat."  It reaches the
+   * whole *object* take family -- `pick all`, `pick X from Y`, `pick all
+   * from Y` -- but NOT the NPC handlers: run400 gives `pick burton` "Take
+   * what?" where `take burton` is answered "...would appreciate being
+   * handled.", and `pick all from burton` "I don't understand where you want
+   * to get things from." where `take all from burton` again gets the
+   * "handled" reply.  `pick up X from Y` is not a take-from either ("Take
+   * what?").  All measured live 2026-08-18; Professor Von Witt's own bundled
+   * walkthrough depends on the bare-`pick` form.  `pick` is also the only
+   * one of these that survives the check described above `close %object%`
+   * below: it appears as a literal in all four Runner listings, where
+   * `grab` -- once listed here -- appears in none. */
+  {"[[get/take/remove/extract/pick] [all/everything] from/empty] %object%",
    lib_cmd_take_all_from},
-  {"[[get/take/remove/extract] [all/everything] from/empty] %object%"
+  {"[[get/take/remove/extract/pick] [all/everything] from/empty] %object%"
    " [[except/but] {for}/apart from] %text%",
    lib_cmd_take_from_except_multiple},
-  {"[get/take/remove/extract] [all/everything]"
+  {"[get/take/remove/extract/pick] [all/everything]"
    " [[except/but] {for}/apart from] %text% from %object%",
    lib_cmd_take_from_except_multiple},
-  {"[get/take/remove/extract] %text% from %object%",
+  {"[get/take/remove/extract/pick] %text% from %object%",
    lib_cmd_take_from_multiple},
   {"[get/take] [all/everything] from %character%", lib_cmd_take_all_from_npc},
   {"[get/take] [all/everything] from %character%"
@@ -219,12 +296,16 @@ static scr_commands_t PRIORITY_COMMANDS[] = {
    " [[except/but] {for}/apart from] %text% from %character%",
    lib_cmd_take_from_npc_except_multiple},
   {"[get/take] %text% from %character%", lib_cmd_take_from_npc_multiple},
-  {"[[get/take/pick up] [all/everything]/pick [all/everything] up]",
+  {"[[get/take/pick up/pick] [all/everything]/pick [all/everything] up]",
    lib_cmd_take_all},
-  {"[get/take/pick up] [all/everything] [[except/but] {for}/apart from] %text%",
+  {"[get/take/pick up/pick] [all/everything]"
+   " [[except/but] {for}/apart from] %text%",
    lib_cmd_take_except_multiple},
-  {"[get/take/pick up] %text%", lib_cmd_take_multiple},
+  /* `pick %text% up` before the bare-`pick` catch-all: a failed object parse
+   * in lib_cmd_take_multiple falls through, but keep `pick flowers up` from
+   * ever being read as `pick "flowers up"` in the first place. */
   {"pick %text% up", lib_cmd_take_multiple},
+  {"[get/take/pick up/pick] %text%", lib_cmd_take_multiple},
   /*
    * "drop X in Y" and "drop X on Y" are Adrift's put handlers wearing a
    * different verb: `drop wallet in bin` answers "You put your wallet inside
@@ -293,17 +374,25 @@ static scr_commands_t STANDARD_COMMANDS[] = {
   /* Inventory, and general investigation of surroundings. */
 #ifdef SCARIER_NO_ABBREVIATIONS
   {"[inventory/inv]", lib_cmd_inventory},
-  {"[ex/exam/examine/look {at}] {{the} [room/location]}", lib_cmd_look},
-  {"[ex/exam/examine/look {at/in}] %object%", lib_cmd_examine_object},
-  {"[ex/exam/examine/look {at}] %character%", lib_cmd_examine_npc},
-  {"[ex/exam/examine/look {at}] [me/self/myself]", lib_cmd_examine_self},
+  {"[ex/exam/examine/look {at}] {{the} [room/location]}",
+   lib_cmd_look},
+  {"[ex/exam/examine/look {at/in}] %object%",
+   lib_cmd_examine_object},
+  {"[ex/exam/examine/look {at}] %character%",
+   lib_cmd_examine_npc},
+  {"[ex/exam/examine/look {at}] [me/self/myself]",
+   lib_cmd_examine_self},
   {"[ex/exam/examine/look {at}] all", lib_cmd_examine_all},
 #else
   {"[inventory/inv/i]", lib_cmd_inventory},
-  {"[x/ex/exam/examine/l/look {at}] {{the} [room/location]}", lib_cmd_look},
-  {"[x/ex/exam/examine/look {at/in}] %object%", lib_cmd_examine_object},
-  {"[x/ex/exam/examine/look {at}] %character%", lib_cmd_examine_npc},
-  {"[x/ex/exam/examine/look {at}] [me/self/myself]", lib_cmd_examine_self},
+  {"[x/ex/exam/examine/l/look {at}] {{the} [room/location]}",
+   lib_cmd_look},
+  {"[x/ex/exam/examine/look {at/in}] %object%",
+   lib_cmd_examine_object},
+  {"[x/ex/exam/examine/look {at}] %character%",
+   lib_cmd_examine_npc},
+  {"[x/ex/exam/examine/look {at}] [me/self/myself]",
+   lib_cmd_examine_self},
   {"[x/ex/exam/examine/look {at}] all", lib_cmd_examine_all},
 #endif
 
@@ -339,6 +428,24 @@ static scr_commands_t STANDARD_COMMANDS[] = {
   {"[drop/put down] %text% [on/onto/on top of] %object%",
    lib_cmd_put_on_multiple},
   {"open %object%", lib_cmd_open_object},
+  /*
+   * DO NOT ADD VERB SYNONYMS BY DIFFING RESPONSES AGAINST A LIVE RUNNER.
+   * Twelve were added that way on 2026-08-18 -- grab, inspect, check, shut,
+   * hand, consume, slay, ignite, shatter, crack, swallow, yank -- each
+   * "confirmed" because it drew the canonical verb's unmatched-object
+   * response rather than the catch-all.  Every one was a false positive:
+   * the probe game, easter.taf, ships its own 100-entry SYNONYM table
+   * (`SCR_DUMP_TASKS=1` prints it) that rewrites all of them before the
+   * parser ever sees them.  None of the twelve occurs as a literal --
+   * anywhere, in any casing -- in run370.bas, run380.bas, run390's
+   * Form1.frm or run400.bas, while every verb that survives here does.
+   *
+   * The listings are the authority: grep the four of them in
+   * ~/Adrift_decompile, or use `index/verbs.py -w <word>`, which lists the
+   * matcher literals per Runner.  A live probe can only confirm what the
+   * listing already shows, and only on a game with no SYNONYM table of its
+   * own (The Town of Azra has none, easter.taf and The Cellar do).
+   */
   {"close %object%", lib_cmd_close_object},
   {"unlock %object% with %text%", lib_cmd_unlock_object_with},
   {"lock %object% with %text%", lib_cmd_lock_object_with},
@@ -350,8 +457,36 @@ static scr_commands_t STANDARD_COMMANDS[] = {
   {"sit {down/up} [on/in] %object%", lib_cmd_sit_on_object},
   {"stand {up/down} [on/in] %object%", lib_cmd_stand_on_object},
   {"[lie/lay] on %object%", lib_cmd_lie_on_object},
+  /*
+   * `get up` is a `stand` synonym in every Runner; `get off` and `get down`
+   * are `stand`-off-a-thing synonyms that arrived in 3.9.  The sitstand
+   * proc tests `c("get off") Or c("get down")` (run400 loc_46B6E4, run390
+   * loc_44432x); neither string appears anywhere in run370/run380.
+   * Measured live on the one file microwaveman.taf -- a 3.80 game -- run
+   * under three Runners, which is the way to see a *library* change rather
+   * than a file-format one:
+   *
+   *              run380              run390                  run400
+   *   get up    "already standing!"  "already standing!"   "already standing!"
+   *   get down  "Take what?"         "not standing on ..."  "not standing on ..."
+   *   get off   "Take what?"         "not standing on ..."  "not standing on ..."
+   *
+   * SCARE has only the file, so it gates on the .taf version as a proxy for
+   * the Runner the game was written for -- the same proxy every other
+   * version-gated row here uses.  The pre-3.9 "Take what?" then falls out
+   * on its own: lib_cmd_get_off()/lib_cmd_get_down() decline below 3.9 and
+   * the command drops through to the bare-verb row
+   * `[get/take/pick up/pick] *` -> lib_cmd_get_what further down.
+   *
+   * `get on %object%` arrived at the same time and is gated with them; it
+   * is a `stand on` synonym that refuses differently.  See
+   * lib_cmd_get_on_object().
+   */
+  {"get on %object%", lib_cmd_get_on_object},
   {"get {down/up} off %object%", lib_cmd_get_off_object},
   {"get off", lib_cmd_get_off},
+  {"get down", lib_cmd_get_down},
+  {"get up", lib_cmd_stand_on_floor},
   {"sit {down/up} {[on/in] {the} [ground/floor]}", lib_cmd_sit_on_floor},
   {"stand {up/down} {[on/in] {the} [ground/floor]}", lib_cmd_stand_on_floor},
   {"[lie/lay] {down/up} {[on/in] {the} [ground/floor]}", lib_cmd_lie_on_floor},
@@ -374,7 +509,28 @@ static scr_commands_t STANDARD_COMMANDS[] = {
 
   /* Selected NPC interactions and conversation. */
   {"ask %character% about %text%", lib_cmd_ask_npc_about},
-  {"[attack/kick/slap] %character% with %object%", lib_cmd_attack_npc_with},
+
+  /*
+   * `talk to %character% about %text%` is the same conversation branch as
+   * `ask`: every Runner guards it with `c("ask") Or c("talk to")` (run370
+   * loc_4387F4, run380 loc_440683, run390 loc_4597F2, run400 loc_47F8F7).
+   * `speak to` is not in that list at any version, so it only ever reaches
+   * the ask-format hint below, even where a topic would have matched.  A
+   * `talk to` with no matching topic lands on the hint too -- see
+   * lib_ask_npc_about().
+   *
+   * The hint itself is the per-character pass's `talk`/`speak` branch, and
+   * its guard is where the versions part: 3.7 and 3.8 match the bare words
+   * (run370 loc_438748, run380 loc_4405D7), 3.9 and 4.0 require the "to"
+   * (run390 loc_45973D, run400 loc_47F84A).  Hence the second row's gate.
+   * Both rows sit ahead of `talk *` further down, which is the generaltasks
+   * rabblings line -- the fall-through 3.9/4.0 leave for a bare `talk bob`.
+   * See lib_cmd_talk_to_npc().
+   */
+  {"talk to %character% about %text%", lib_cmd_talk_to_npc_about},
+  {"[talk/speak] to %character% *", lib_cmd_talk_to_npc},
+  {"[talk/speak] %character% *", lib_cmd_talk_to_npc_pre_390},
+  {"[attack/kick] %character% with %object%", lib_cmd_attack_npc_with},
   {"chop %character% with %object%", lib_cmd_chop_npc_with},
   {"cut %character% with %object%", lib_cmd_cut_npc_with},
   {"hit %character% with %object%", lib_cmd_hit_npc_with},
@@ -383,7 +539,14 @@ static scr_commands_t STANDARD_COMMANDS[] = {
   {"throw %object% at %character%", lib_cmd_throw_npc_with},
   {"kill %character% with %object%", lib_cmd_kill_npc_with},
   {"fight %character% with %object%", lib_cmd_fight_npc_with},
-  {"[attack/kick/slap] %character%", lib_cmd_attack_npc},
+  /*
+   * `slap` is a pre-parse rewrite to `hit`, not a grammar verb, and it is
+   * space-bounded in 4.0 so a command-initial `slap` never fires there.
+   * `smack` is in no Runner at all.  See lib_cmd_slap_*() for the sites.
+   */
+  {"[attack/kick] %character%", lib_cmd_attack_npc},
+  {"slap %character% with %object%", lib_cmd_slap_npc_with},
+  {"slap %character%", lib_cmd_slap_npc},
   {"chop %character%", lib_cmd_chop_npc},
   {"cut %character%", lib_cmd_cut_npc},
   {"shoot %character%", lib_cmd_shoot_npc},
@@ -392,9 +555,39 @@ static scr_commands_t STANDARD_COMMANDS[] = {
   {"fight %character%", lib_cmd_fight_npc},
 
   /* More movement, waiting, and miscellaneous administrative commands. */
-  {"[goto/go {to}] %text%", lib_cmd_go_room},
-  {"[goto/go {to}] *", lib_cmd_print_room_exits},
-  {"[exit/exits/directions/where]", lib_cmd_print_room_exits},
+  /*
+   * `go` and `enter` are the two verbs generaltasks answers with a nudge back
+   * to the compass -- run370 loc_43DD8B / loc_43DDB4, run380 loc_44481C /
+   * loc_444845, run390 loc_45DF66 / loc_45DF83, run400 loc_48936C /
+   * loc_489383.  The movement table above has already taken every bare
+   * direction word, `enter` and `exit` among them, so what is left here is a
+   * bare `go` and an `enter` with something attached.  See
+   * lib_cmd_just_a_direction().
+   *
+   * `goto`/`go to` keep their own rows below: they are the Runner's
+   * gotoplace(), which exits at once on a bare `go`, `goto` or `go to`
+   * (run390 loc_43C7B0, run400 loc_464998) and so leaves those to the nudge
+   * as well.
+   */
+  {"go", lib_cmd_just_a_direction},
+  {"go to", lib_cmd_just_a_direction},
+  {"enter *", lib_cmd_just_a_direction},
+
+  /*
+   * The room-request rows.  `goto X` and `go to X` are gotoplace() at every
+   * version; a bare `go X` only became one in 3.9, so under 3.7 and 3.8 it
+   * falls to the nudge instead -- see lib_cmd_just_a_direction_pre_390(),
+   * which returns FALSE from 3.9 on and lets the two `go` rows after it have
+   * the command.
+   */
+  {"goto %text%", lib_cmd_go_room},
+  {"goto *", lib_cmd_print_room_exits},
+  {"go to %text%", lib_cmd_go_room},
+  {"go to *", lib_cmd_print_room_exits},
+  {"go *", lib_cmd_just_a_direction_pre_390},
+  {"go %text%", lib_cmd_go_room},
+  {"go *", lib_cmd_print_room_exits},
+  {"[exits/directions/where]", lib_cmd_print_room_exits},
 #ifdef SCARIER_NO_ABBREVIATIONS
   {"[wait] %number%", lib_cmd_wait_number},
   {"[wait]", lib_cmd_wait},
@@ -461,7 +654,7 @@ static scr_commands_t STANDARD_COMMANDS[] = {
   {"[count/num]", lib_cmd_count},
 
   /* Standard response commands; no real action, just output. */
-  {"[get/take/pick up] *", lib_cmd_get_what},
+  {"[get/take/pick up/pick] *", lib_cmd_get_what},
   {"open *", lib_cmd_open_what},
   {"close *", lib_cmd_close_other},
   {"give %object% *", lib_cmd_give_object},
@@ -476,8 +669,18 @@ static scr_commands_t STANDARD_COMMANDS[] = {
   {"[remove/take off/doff] *", lib_cmd_remove_what},
   {"[drop/put down] *", lib_cmd_drop_what},
   {"[wear/put on/don] *", lib_cmd_wear_what},
-  {"[shit/fuck/bastard/cunt/crap/hell/shag/bollocks/bollox/bugger] *",
+  /*
+   * The swearing list is version-split at both ends.  `piss` has been in it
+   * since 3.7 and was simply missed here; `bugger` arrived in 3.9 and is not
+   * in the 3.7/3.8 Runners; `bloody` went the other way and was dropped in
+   * 4.0.  Read out of generaltasks in all four decompiled Runners with
+   * `index/verbs.py -w <word>` (~/Adrift_decompile), which lists every
+   * literal handed to the parser's whole-word matchers.
+   */
+  {"[shit/fuck/bastard/cunt/crap/hell/shag/bollocks/bollox/piss] *",
    lib_cmd_profanity},
+  {"bugger *", lib_cmd_profanity_390},
+  {"bloody *", lib_cmd_profanity_pre_400},
   {"[x/examine/look {at}] *", lib_cmd_examine_other},
   {"[locate/where {is/are}/find] *", lib_cmd_locate_other},
   {"[cp/mv/ln/ls] *", lib_cmd_unix_like},
@@ -523,6 +726,9 @@ static scr_commands_t STANDARD_COMMANDS[] = {
   {"hit %object% *", lib_cmd_hit_object},
   {"hit %text%", lib_cmd_hit_other},
   {"hit", lib_cmd_hit_what},
+  {"slap %object% *", lib_cmd_slap_object},
+  {"slap %text%", lib_cmd_slap_other},
+  {"slap", lib_cmd_slap_what},
   {"hum *", lib_cmd_hum},
   {"jump *", lib_cmd_jump},
   {"kick %character%", lib_cmd_attack_npc},
@@ -680,7 +886,40 @@ run_priority_commands (scr_gameref_t game, const scr_char *string)
     }
   run_priority_pass_active = FALSE;
 
-  /* Nothing matched match the string.  Or if it did, its handler failed. */
+  /* Nothing matched the string.  Or if it did, its handler failed. */
+  return FALSE;
+}
+
+/*
+ * run_move_commands()
+ *
+ * Return the movement command table matching the game's compass setting.
+ */
+static scr_commandsref_t
+run_move_commands (const scr_prop_setref_t bundle)
+{
+  return prop_get_global_boolean (bundle, "EightPointCompass")
+         ? MOVE_COMMANDS_8 : MOVE_COMMANDS_4;
+}
+
+/*
+ * run_try_command_table()
+ *
+ * Search a command table for a match to the string, returning TRUE on the
+ * first matching command whose handler succeeds.
+ */
+static scr_bool
+run_try_command_table (scr_commandsref_t command,
+                       scr_gameref_t game, const scr_char *string)
+{
+  for (; command->command; command++)
+    {
+      if (uip_match (command->command, string, game))
+        {
+          if (command->handler (game))
+            return TRUE;
+        }
+    }
   return FALSE;
 }
 
@@ -696,24 +935,11 @@ static scr_bool
 run_movement_succeeds (scr_gameref_t game, const scr_char *string)
 {
   const scr_prop_setref_t bundle = gs_get_bundle (game);
-  scr_bool eightpointcompass, is_movement = FALSE;
-  scr_commandsref_t command;
-
-  eightpointcompass = prop_get_global_boolean (bundle, "EightPointCompass");
-  command = eightpointcompass ? MOVE_COMMANDS_8 : MOVE_COMMANDS_4;
+  scr_bool is_movement;
 
   lib_set_movement_probe (TRUE);
-  for (; command->command; command++)
-    {
-      if (uip_match (command->command, string, game))
-        {
-          if (command->handler (game))
-            {
-              is_movement = TRUE;
-              break;
-            }
-        }
-    }
+  is_movement = run_try_command_table (run_move_commands (bundle),
+                                       game, string);
   lib_set_movement_probe (FALSE);
 
   return is_movement;
@@ -724,39 +950,18 @@ static scr_bool
 run_standard_commands (scr_gameref_t game, const scr_char *string)
 {
   const scr_prop_setref_t bundle = gs_get_bundle (game);
-  scr_vartype_t vt_key[2];
-  scr_bool eightpointcompass;
-  scr_commandsref_t command;
-
-  /* Select the appropriate movement commands. */
-  vt_key[0].string = "Globals";
-  vt_key[1].string = "EightPointCompass";
-  eightpointcompass = prop_get_boolean (bundle, "B<-ss", vt_key);
-  command = eightpointcompass ? MOVE_COMMANDS_8 : MOVE_COMMANDS_4;
 
   /*
    * Search movement commands first, returning TRUE if any matching command
    * handler succeeded.  Then repeat for standard library commands.
    */
-  for (; command->command; command++)
-    {
-      if (uip_match (command->command, string, game))
-        {
-          if (command->handler (game))
-            return TRUE;
-        }
-    }
+  if (run_try_command_table (run_move_commands (bundle), game, string))
+    return TRUE;
 
-  for (command = STANDARD_COMMANDS; command->command; command++)
-    {
-      if (uip_match (command->command, string, game))
-        {
-          if (command->handler (game))
-            return TRUE;
-        }
-    }
+  if (run_try_command_table (STANDARD_COMMANDS, game, string))
+    return TRUE;
 
-  /* Nothing matched match the string.  Or if it did, its handler failed. */
+  /* Nothing matched the string.  Or if it did, its handler failed. */
   return FALSE;
 }
 
@@ -771,7 +976,6 @@ run_update_status (scr_gameref_t game)
 {
   const scr_prop_setref_t bundle = gs_get_bundle (game);
   const scr_var_setref_t vars = gs_get_vars (game);
-  scr_vartype_t vt_key[2];
   const scr_char *name, *status;
   scr_char *filtered;
   scr_bool statusbox;
@@ -785,14 +989,11 @@ run_update_status (scr_gameref_t game)
   game->current_room_name.reset (filtered);
 
   /* See if the game does a status box. */
-  vt_key[0].string = "Globals";
-  vt_key[1].string = "StatusBox";
-  statusbox = prop_get_boolean (bundle, "B<-ss", vt_key);
+  statusbox = prop_get_global_boolean (bundle, "StatusBox");
   if (statusbox)
     {
       /* Get the status line, and filter and untag it. */
-      vt_key[1].string = "StatusBoxText";
-      status = prop_get_string (bundle, "S<-ss", vt_key);
+      status = prop_get_global_string (bundle, "StatusBoxText");
       filtered = pf_filter (status, vars, bundle);
       pf_strip_tags (filtered);
     }
@@ -850,7 +1051,7 @@ run_notify_score_change (scr_gameref_t game)
 /*
  * Cached per-task command patterns.
  *
- * run_match_task_common() is called for every task on every player command,
+ * run_match_task_commands() is called for every task on every player command,
  * and before caching it re-read the task's (Reverse)Command pattern strings
  * from the bundle on each attempt.  The patterns are immutable once a game
  * is loaded, and prop_get_string() returns stable pointers into the bundle,
@@ -921,20 +1122,112 @@ run_forget_game (const void *game)
 }
 
 /*
- * run_match_task_common()
- * run_match_task_commands()
- * run_match_task_functions()
+ * run_pattern_names_verb()
  *
- * Helpers for run_game_commands_common().
+ * Helper for run_match_task_commands().  Return TRUE if the pattern
+ * contains, as a standalone whitespace-delimited token, the first word of
+ * the string passed in (case insensitive).
+ */
+static scr_bool
+run_pattern_names_verb (const scr_char *pattern, const scr_char *string)
+{
+  const scr_char *verb;
+  scr_int verb_length;
+
+  /* Isolate the first word of the string; no word, no possible match. */
+  verb = string + strspn (string, WHITESPACE);
+  verb_length = strcspn (verb, WHITESPACE);
+  if (verb_length == 0)
+    return FALSE;
+
+  /* Scan pattern tokens for a case-insensitive whole-word match. */
+  for (pattern += strspn (pattern, WHITESPACE); *pattern != NUL;)
+    {
+      const scr_int token_length = strcspn (pattern, WHITESPACE);
+
+      if (token_length == verb_length
+          && scr_strncasecmp (pattern, verb, verb_length) == 0)
+        return TRUE;
+
+      pattern += token_length;
+      pattern += strspn (pattern, WHITESPACE);
+    }
+
+  return FALSE;
+}
+
+/*
+ * The player's current command element (pronoun-substituted), stashed by
+ * run_all_commands() so that library-initiated match attempts can consult
+ * the verb the player actually typed alongside the library's canonical
+ * constructed command ("get <object>", and so on).
+ */
+static const scr_char *run_dispatch_input = NULL;
+
+/*
+ * Tasks that have already been run by the current command element, reset by
+ * run_all_commands() alongside run_dispatch_input.
+ *
+ * A command is dispatched to the tasks twice, once with restrictions ignored
+ * and once with them honoured, and the spent-task refusal pass below has to
+ * know the difference between a task that was already done when the player
+ * typed, and one this very command has just completed.  Only the first is a
+ * refusal.  "Shadow of the Past" is the case: `examine good book` runs a
+ * silent task (it drops a key and scores, and has no completion text), which
+ * turns its own "book not yet crumbled" restriction false; the library
+ * examine then prints the book's -- now crumbled -- description.  run400
+ * answers the first `examine good book` with that description and only a
+ * second one with the restriction's "The book is nothing but dust now."
+ * (measured live 2026-08-23, Adrift_15.txt).
+ */
+static std::vector<scr_bool> run_tasks_ran_this_command;
+
+static void
+run_note_task_ran (scr_gameref_t game, scr_int task)
+{
+  if (run_tasks_ran_this_command.size () != (size_t) gs_task_count (game))
+    run_tasks_ran_this_command.assign (gs_task_count (game), FALSE);
+  run_tasks_ran_this_command[task] = TRUE;
+}
+
+static scr_bool
+run_task_ran_this_command (scr_int task)
+{
+  return (size_t) task < run_tasks_ran_this_command.size ()
+         && run_tasks_ran_this_command[task];
+}
+
+/*
+ * UNPORTED, measured 2026-08-23 (make_39_doneprobe.py, run390 Adrift_18.txt
+ * and Adrift_19.txt): below 4.0 a game task that matches the command element
+ * claims it even when it says nothing, so the standard library verb that would
+ * otherwise answer never gets a turn.  `x book` on a spent `* x * book *` task
+ * answers "You have already done that." instead of the book's description,
+ * where `look at book` -- matching no task -- prints the description; and a
+ * silent task that runs and prints nothing leaves "I don't understand." rather
+ * than the library answer.  4.0 dropped this: run400 falls through to the
+ * library examine in both cells (Adrift_14.txt, Adrift_15.txt).
+ *
+ * Implementing it as written -- record the silent match, then skip
+ * run_standard_commands() below 4.0 -- costs 15 v4-corpus goldens, several of
+ * them whole walkthroughs that stop winning, so the rule as stated is too
+ * broad and the narrowing is not yet measured.  Left out until it is; see
+ * test/adrift4/notes/RUNNER_TESTS_TODO.md.
+ */
+
+/*
+ * run_match_task_commands()
+ *
+ * Helper for run_game_commands_common().
  *
  * Search task command for a match to the string passed in, returning TRUE
  * if a task command matches, FALSE otherwise.  Ordinary or reverse commands
  * are selected by 'forwards'.
  */
 static scr_bool
-run_match_task_common (scr_gameref_t game,
-                       scr_int task, const scr_char *string, scr_bool forwards,
-                       scr_bool is_library, scr_bool is_normal)
+run_match_task_commands (scr_gameref_t game,
+                         scr_int task, const scr_char *string,
+                         scr_bool forwards, scr_bool is_library)
 {
   const std::vector<const scr_char *> &patterns =
       run_task_command_patterns (game, task, forwards);
@@ -953,26 +1246,38 @@ run_match_task_common (scr_gameref_t game,
       pattern = patterns[command];
       first = strspn (pattern, WHITESPACE);
 
-      /* Match using either the parser, or the special function matcher. */
-      if (is_normal)
+      /*
+       * Make a special case of library calls and commands that begin with a
+       * wildcard.  Probed live in run400 (2026-08-22, probes pPREC and
+       * pPREC2, transcripts Adrift_10/11.txt): a wildcard-leading pattern
+       * with failing messaged restrictions blocks the system take only when
+       * the pattern explicitly names a verb -- either the library's
+       * canonical verb ("* get * tent *" blocks both "get tent" and "take
+       * tent") or the verb the player actually typed ("* take * tent *"
+       * blocks "take tent" but NOT "get tent").  A verb-less "* ball *"
+       * pattern never blocks: the system take wins even though the same
+       * pattern with passing restrictions would run as a game command.
+       * Failing restrictions with an empty message fall through to the
+       * system command silently in every case (that drops out of the
+       * loudly-restricted machinery here without special handling).
+       *
+       * The library constructs its match string with the canonical verb
+       * ("get <object>"), so a pattern naming only the typed verb cannot
+       * match it; for those, retry the match against the player's actual
+       * input, stashed by run_all_commands().
+       */
+      if (pattern[first] == SPECIAL_PATTERN)
+        ;
+      else if (is_library && pattern[first] == WILDCARD_PATTERN)
         {
-          if (pattern[first] != SPECIAL_PATTERN)
-            {
-              /*
-               * Make a special case of library calls and commands that begin
-               * with a wildcard; these we ignore for this match attempt.
-               */
-              if (is_library && pattern[first] == WILDCARD_PATTERN)
-                is_matched = FALSE;
-              else
-                is_matched = uip_match (pattern, string, game);
-            }
+          if (run_pattern_names_verb (pattern, string))
+            is_matched = uip_match (pattern, string, game);
+          if (!is_matched && run_dispatch_input != NULL
+              && run_pattern_names_verb (pattern, run_dispatch_input))
+            is_matched = uip_match (pattern, run_dispatch_input, game);
         }
       else
-        {
-          if (pattern[first] == SPECIAL_PATTERN)
-            is_matched = run_is_task_function (pattern, game);
-        }
+        is_matched = uip_match (pattern, string, game);
 
       /* Stop searching if we find a match. */
       if (is_matched)
@@ -1031,26 +1336,6 @@ run_match_task_common (scr_gameref_t game,
 
   /* Return TRUE if we found a pattern match. */
   return is_matched;
-}
-
-static scr_bool
-run_match_task_commands (scr_gameref_t game,
-                         scr_int task, const scr_char *string,
-                         scr_bool forwards, scr_bool is_library)
-{
-  /*
-   * Match tasks using the normal pattern matcher, with or without any note
-   * about whether the call is from the library.
-   */
-  return run_match_task_common (game, task, string, forwards, is_library, TRUE);
-}
-
-static scr_bool
-run_match_task_functions (scr_gameref_t game,
-                          scr_int task, const scr_char *string, scr_bool forwards)
-{
-  /* Match tasks against "task command functions". */
-  return run_match_task_common (game, task, string, forwards, FALSE, FALSE);
 }
 
 
@@ -1113,7 +1398,6 @@ run_task_is_loudly_restricted (scr_gameref_t game, scr_int task)
 /*
  * run_game_commands_common()
  * run_game_commands_in_parser_context()
- * run_game_commands_in_library_context()
  *
  * The central handler for running, or at least trying to run, game-defined
  * tasks that have commands that match the input string.  Here's the algorithm
@@ -1166,10 +1450,44 @@ run_game_commands_common (scr_gameref_t game, const scr_char *string,
    * Iterate over every task, ignoring those not runnable.  For each runnable
    * task, try matching task commands, and on matches, check restrictions and
    * if they pass, try running the task.
+   *
+   * Spent tasks (done, non-repeatable, but still in their rooms) also get
+   * their forwards commands matched -- not to run them, but to seed the
+   * cache for the loud restriction-failure pass below.  The Runner checks a
+   * matched task's restrictions before its done state, so a spent task whose
+   * restrictions fail with a message still prints that message (run400,
+   * Provenance's squeeze-through-the-hole task: a second "s" at the hole
+   * re-prints "The only way you are going to make it through that hole is if
+   * you drop everything you are carrying.", 2026-08-22).  A spent task whose
+   * restrictions PASS instead falls through to run_task_refusal(), which
+   * answers with RepeatText or "You have already done that.".
+   *
+   * This holds on the library-callback path too, not just for plain game
+   * commands: probe DONE, task `* get * gem *` with a "holding the stone"
+   * restriction, run400 2026-08-23 -- once the task is spent, `get gem`
+   * without the stone answers "BLOCK-GEM." instead of taking the gem, and
+   * with the stone falls through to the library take ("Player take the
+   * gem.").  So `is_library` does not gate the spent-task match here.
+   *
+   * All of that is 4.0 only.  The 3.9 twin of the probe (p39done.taf, built
+   * by test/adrift4/harness/make_39_doneprobe.py) says run390 orders the two
+   * tests the other way about: a spent task answers "You have already done
+   * that." whether its restrictions pass or fail, and never prints a fail
+   * message (`alpha` and `x book` after dropping the stone, Adrift_18.txt
+   * 2026-08-23).  Pre-4.0 therefore leaves spent tasks out of the loud
+   * restriction pass entirely, and run_task_refusal() answers them.
    */
+  const scr_bool is_restriction_first =
+      run_get_version (gs_get_bundle (game)) >= TAF_VERSION_400;
+
   for (task = 0; task < task_count; task++)
     {
-      if (!task_can_run_task (game, task))
+      const scr_bool is_refusing = include_restrictions
+                                   && is_restriction_first
+                                   && !run_task_ran_this_command (task)
+                                   && task_is_done_refused (game, task);
+
+      if (!is_refusing && !task_can_run_task (game, task))
         continue;
 
       /*
@@ -1181,13 +1499,19 @@ run_game_commands_common (scr_gameref_t game, const scr_char *string,
       for (direction = 0; direction < 2; direction++)
         {
           const scr_bool is_forwards = !direction;
+          const scr_bool is_runnable_directional =
+              task_can_run_task_directional (game, task, is_forwards);
 
-          if (task_can_run_task_directional (game, task, is_forwards)
-              && run_match_task_commands (game, task, string,
-                                          is_forwards, is_library))
+          if (!is_runnable_directional && !(is_refusing && is_forwards))
+            continue;
+
+          if (run_match_task_commands (game, task, string,
+                                       is_forwards, is_library))
             {
-              if (run_task_is_unrestricted (game, task))
+              if (is_runnable_directional
+                  && run_task_is_unrestricted (game, task))
                 {
+                  run_note_task_ran (game, task);
                   if (task_run_task (game, task, is_forwards))
                     is_handled = TRUE;
                   is_matched = TRUE;
@@ -1212,8 +1536,15 @@ run_game_commands_common (scr_gameref_t game, const scr_char *string,
     {
       for (task = 0; task < task_count; task++)
         {
-          if (!is_matching[task] || !task_can_run_task (game, task))
+          scr_bool is_refusing;
+
+          if (!is_matching[task])
             continue;
+
+          /* Spent tasks are eligible here too (4.0); see the first loop. */
+          is_refusing = is_restriction_first
+                        && !run_task_ran_this_command (task)
+                        && task_is_done_refused (game, task);
 
           /*
            * Check matches of forwards and reverse commands.  If there's a
@@ -1225,12 +1556,14 @@ run_game_commands_common (scr_gameref_t game, const scr_char *string,
             {
               const scr_bool is_forwards = !direction;
 
-              if (task_can_run_task_directional (game, task, is_forwards)
+              if ((task_can_run_task_directional (game, task, is_forwards)
+                   || (is_refusing && is_forwards))
                   && run_match_task_commands (game, task, string,
                                               is_forwards, is_library))
                 {
                   if (run_task_is_loudly_restricted (game, task))
                     {
+                      run_note_task_ran (game, task);
                       if (task_run_task (game, task, is_forwards))
                         {
                           is_handled = TRUE;
@@ -1259,18 +1592,6 @@ run_game_commands_in_parser_context (scr_gameref_t game, const scr_char *string,
    */
   return run_game_commands_common (game, string, include_restrictions, FALSE);
 }
-
-static scr_bool
-run_game_commands_in_library_context (scr_gameref_t game, const scr_char *string)
-{
-  /*
-   * Try game commands, including restrictions, and noting that this is a
-   * library call so that the parse matcher can exclude game commands that
-   * begin with a '*' wildcard.
-   */
-  return run_game_commands_common (game, string, TRUE, TRUE);
-}
-
 
 /*
  * run_does_command_match()
@@ -1336,41 +1657,39 @@ run_does_command_match (scr_gameref_t game, const scr_char *string)
 }
 
 
+
 /*
- * run_game_functions()
+ * run_task_run_by_index()
  *
- * Iterate over every task, ignoring those not runnable, searching just for
- * "task command functions".  These seem to happen in addition to any regular
- * command matches, so we try them as a separate action.
+ * Run a task selected by its index rather than by matching input -- the 4.0
+ * Runner's Sub_20_22.  Every one of that routine's callers goes through here:
+ * an "execute task" action, an event running its TaskAffected, a walk's
+ * CharTask or ObjectTask, and the battle system.
+ *
+ * The reason it is not simply task_run_task() is the preamble: before running
+ * the task, run400 walks the task's *alternate* commands looking for a task
+ * command function, and a getdynfromroom() found there sets the Referenced
+ * Object for the run.  The task's primary command is not in the array it
+ * scans, so a task whose only command is the function never evaluates it.
+ * Verified live in run400 (RUNNER_TESTS_TODO.md section 9): wrapping each
+ * probe in an "execute task" action is the only way to make its function
+ * fire at all, and a probe carrying the function as its sole command stays
+ * silent.
  */
-static void
-run_game_functions (scr_gameref_t game, const scr_char *string)
+scr_bool
+run_task_run_by_index (scr_gameref_t game, scr_int task)
 {
-  scr_int task_count, task, direction;
+  const std::vector<const scr_char *> &patterns =
+      run_task_command_patterns (game, task, TRUE);
+  scr_int command;
 
-  /* Iterate over every task, ignoring those not runnable. */
-  task_count = gs_task_count (game);
-  for (task = 0; task < task_count; task++)
+  for (command = 1; command < (scr_int) patterns.size (); command++)
     {
-      if (!task_can_run_task (game, task))
-        continue;
-
-      /*
-       * Try matching forwards and reverse commands.  I don't know if it's
-       * valid to put a function in a reverse command, but nevertheless...
-       */
-      for (direction = 0; direction < 2; direction++)
-        {
-          const scr_bool is_forwards = !direction;
-
-          if (task_can_run_task_directional (game, task, is_forwards)
-              && run_match_task_functions (game, task, string, is_forwards))
-            {
-              if (run_task_is_unrestricted (game, task))
-                task_run_task (game, task, is_forwards);
-            }
-        }
+      if (run_is_task_function (patterns[command], game))
+        break;
     }
+
+  return task_run_task (game, task, TRUE);
 }
 
 
@@ -1402,20 +1721,18 @@ run_game_functions (scr_gameref_t game, const scr_char *string)
  * variants E/G): the walk task fires with a wildcard listed before it, and
  * a restricted walk task prints its FailMessage on every arrival turn.
  */
+static void run_task_command_dispatch (scr_gameref_t game, scr_int eventtask);
+
+
 void
 run_npc_walk_task (scr_gameref_t game, scr_int walktask)
 {
   const scr_prop_setref_t bundle = gs_get_bundle (game);
-  scr_vartype_t vt_key;
-  scr_int version;
 
-  vt_key.string = "Version";
-  version = prop_get_integer (bundle, "I<-s", &vt_key);
-
-  if (version < TAF_VERSION_400)
+  if (run_get_version (bundle) < TAF_VERSION_400)
     run_task_command_dispatch (game, walktask);
   else if (task_can_run_task_directional (game, walktask, TRUE))
-    task_run_task (game, walktask, TRUE);
+    run_task_run_by_index (game, walktask);
 }
 
 
@@ -1449,7 +1766,7 @@ run_npc_walk_task (scr_gameref_t game, scr_int walktask)
  * walk CharTask/ObjectTask path above (in the 3.9 Runner both are the same
  * P-code sequence); run_event_task() is the event-facing name.
  */
-void
+static void
 run_task_command_dispatch (scr_gameref_t game, scr_int eventtask)
 {
   const scr_prop_setref_t bundle = gs_get_bundle (game);
@@ -1564,12 +1881,8 @@ static scr_bool
 run_defer_loud_tasks_to_movement (scr_gameref_t game, const scr_char *string)
 {
   const scr_prop_setref_t bundle = gs_get_bundle (game);
-  scr_vartype_t vt_key;
-  scr_int version;
 
-  vt_key.string = "Version";
-  version = prop_get_integer (bundle, "I<-s", &vt_key);
-  if (version > TAF_VERSION_380)
+  if (run_get_version (bundle) > TAF_VERSION_380)
     return FALSE;
 
   return run_movement_succeeds (game, string);
@@ -1628,7 +1941,6 @@ run_task_refusal (scr_gameref_t game, const scr_char *string)
 {
   const scr_prop_setref_t bundle = gs_get_bundle (game);
   const scr_filterref_t filter = gs_get_filter (game);
-  scr_vartype_t vt_key[3];
   scr_int version, perspective, task_count, task, direction;
   scr_int refusal, refused_task;
   const scr_char *repeattext;
@@ -1642,8 +1954,7 @@ run_task_refusal (scr_gameref_t game, const scr_char *string)
   if (scr_strempty (string))
     return FALSE;
 
-  vt_key[0].string = "Version";
-  version = prop_get_integer (bundle, "I<-s", vt_key);
+  version = run_get_version (bundle);
 
   /*
    * Look for the first task in list order whose command matches the input and
@@ -1673,7 +1984,14 @@ run_task_refusal (scr_gameref_t game, const scr_char *string)
             }
         }
 
+      /*
+       * A task the current command has just completed is not "already done"
+       * for that command -- p39done.taf's silent `* x * scroll *` task runs,
+       * prints nothing, and run390 then answers "I don't understand." rather
+       * than "You have already done that." (Adrift_18.txt 2026-08-23).
+       */
       if (refusal == REFUSAL_NONE
+          && !run_task_ran_this_command (task)
           && task_is_done_refused (game, task)
           && run_match_task_commands (game, task, string, TRUE, FALSE))
         {
@@ -1728,14 +2046,13 @@ run_task_refusal (scr_gameref_t game, const scr_char *string)
  * run_all_commands()
  * run_game_task_commands()
  *
- * Alternative facets of run_commands_common().  The first is used by the
+ * Alternative facets of run_game_commands_common().  The first is used by the
  * main user input handling loop; the latter by the library when looking for
  * game commands that override standard actions.
  */
 static scr_bool
 run_all_commands (scr_gameref_t game, const scr_char *string)
 {
-  const scr_prop_setref_t bundle = gs_get_bundle (game);
   scr_bool status;
 
   /*
@@ -1759,20 +2076,20 @@ run_all_commands (scr_gameref_t game, const scr_char *string)
    * system commands; ones that move objects to inventory.  These system
    * commands will call back into trying game commands for objects taken or
    * dropped, and in those tries, allow overrides only if the game task is
-   * explicit about what it's doing (that is, doesn't start with "*"), and
-   * handle restrictions in those tries.  After that, retry all game commands
-   * again with restrictions enabled.  And finally, try all other standard
-   * library commands.
-   *
-   * TODO This is the fourth or fifth attempt at getting this to match the
-   * Runner, which is surprisingly inconsistent in this area.  What on earth
-   * is the real behavior supposed to be?
+   * explicit about what it's doing -- it doesn't start with "*", or it does
+   * but explicitly names a verb (see run_match_task_commands() for the
+   * run400 probe results behind that rule) -- and handle restrictions in
+   * those tries.  After that, retry all game commands again with
+   * restrictions enabled.  And finally, try all other standard library
+   * commands.
    */
   /*
    * The carrying-capacity accounting toggle is exposed as a Glk port command
    * ("glk capacity"), handled in the front end before input ever reaches the
    * interpreter, so there is no administrative meta-command to match here.
    */
+  run_dispatch_input = string;
+  run_tasks_ran_this_command.assign (gs_task_count (game), FALSE);
   status = run_game_commands_in_parser_context (game, string, FALSE);
   if (!status)
     status = run_priority_commands (game, string);
@@ -1782,23 +2099,8 @@ run_all_commands (scr_gameref_t game, const scr_char *string)
     status = run_standard_commands (game, string);
   if (!status)
     status = run_task_refusal (game, string);
-
-  /*
-   * For version 4.0 games, it seems that if any command succeeded, we need
-   * need to scan for and run any matching "task command functions", in
-   * addition to anything done above.
-   */
-  if (status && !game->is_admin)
-    {
-      scr_vartype_t vt_key;
-      scr_int version;
-
-      /* Check "task command functions" for version 4.0 only. */
-      vt_key.string = "Version";
-      version = prop_get_integer (bundle, "I<-s", &vt_key);
-      if (version == TAF_VERSION_400)
-        run_game_functions (game, string);
-    }
+  run_dispatch_input = NULL;
+  run_tasks_ran_this_command.clear ();
 
   return status;
 }
@@ -1806,7 +2108,24 @@ run_all_commands (scr_gameref_t game, const scr_char *string)
 scr_bool
 run_game_task_commands (scr_gameref_t game, const scr_char *string)
 {
-  return run_game_commands_in_library_context (game, string);
+  /*
+   * Try game commands, and note that this is a library call so that the parse
+   * matcher can exclude game commands that begin with a '*' wildcard.
+   *
+   * Restrictions are honoured -- meaning a task whose restrictions fail with a
+   * message gets run for the message, beating the library action -- from 4.0
+   * on only.  Probe DONE, task `* get * gem *` restricted to "holding the
+   * stone", measured 2026-08-23: run400 answers `get gem` without the stone
+   * with "BLOCK-GEM." (Adrift_20.txt), while run390 on the 3.9 twin probe
+   * quietly takes the gem instead (Adrift_18.txt).  Pre-4.0 the library wins,
+   * so the loud pass is switched off here rather than being allowed to claim
+   * the command.  Tasks whose restrictions PASS still run in either version --
+   * the first loop below does not consult this flag.
+   */
+  const scr_bool include_restrictions =
+      run_get_version (gs_get_bundle (game)) >= TAF_VERSION_400;
+
+  return run_game_commands_common (game, string, include_restrictions, TRUE);
 }
 
 
@@ -2151,9 +2470,7 @@ run_prompt_player_name (scr_gameref_t game)
   scr_char buffer[LINE_BUFFER_SIZE];
   const scr_char *name;
 
-  vt_key[0].string = "Globals";
-  vt_key[1].string = "PromptName";
-  if (!prop_get_boolean (bundle, "B<-ss", vt_key))
+  if (!prop_get_global_boolean (bundle, "PromptName"))
     return;
 
   for (;;)
@@ -2175,6 +2492,7 @@ run_prompt_player_name (scr_gameref_t game)
       break;
     }
 
+  vt_key[0].string = "Globals";
   vt_key[1].string = "PlayerName";
   prop_put_string (bundle, "S<-ss", name, vt_key);
 }
@@ -2192,6 +2510,14 @@ run_prompt_player_name (scr_gameref_t game)
  * globals, mirroring the Runner.  The value lives in the (session-persistent)
  * property bundle, so it survives save/restore/undo within a session, and a
  * fresh load re-asks -- exactly as the Runner behaves.
+ *
+ * The stored value is ADRIFT's own gender enumeration -- Male 0, Female 1,
+ * Unknown/Neuter 2, the NPC_MALE/NPC_FEMALE/NPC_NEUTER of scprotos.h -- because
+ * that is what a type-3 var2=7 restriction compares against (screstrs.cpp case
+ * 7 does a bare `gender == var3`).  Recording male as 1 and female as 0, as
+ * this used to, silently ran every gender-gated task on the opposite branch:
+ * "Provenance" dressed a male player in a house dress, and "The Secret of the
+ * Lost World" answered "female" but took the male path (ring to the princess).
  */
 static void
 run_prompt_player_gender (scr_gameref_t game)
@@ -2202,12 +2528,10 @@ run_prompt_player_gender (scr_gameref_t game)
   scr_vartype_t vt_key[2];
   scr_int gender;
 
-  vt_key[0].string = "Globals";
-  vt_key[1].string = "PlayerGender";
-  gender = prop_get_integer (bundle, "I<-ss", vt_key);
+  gender = prop_get_global_integer (bundle, "PlayerGender");
 
-  /* Only an Unknown (2) gender needs a choice; Male (1)/Female (0) are set. */
-  if (gender != 2)
+  /* Only an Unknown (2) gender needs a choice; Male (0)/Female (1) are set. */
+  if (gender != NPC_NEUTER)
     return;
 
   for (;;)
@@ -2229,17 +2553,19 @@ run_prompt_player_gender (scr_gameref_t game)
         ;
       if (*reply == 'm' || *reply == 'M')
         {
-          gender = 1;
+          gender = NPC_MALE;
           break;
         }
       if (*reply == 'f' || *reply == 'F')
         {
-          gender = 0;
+          gender = NPC_FEMALE;
           break;
         }
       pf_buffer_string (filter, "Please answer \"male\" or \"female\".\n");
     }
 
+  vt_key[0].string = "Globals";
+  vt_key[1].string = "PlayerGender";
   prop_put_integer (bundle, "I<-ss", gender, vt_key);
 }
 
@@ -2284,9 +2610,7 @@ run_main_loop (scr_gameref_t game)
        * style_Subheader and <c> to the input colour, and the ANSI port
        * discards both tags, leaving headless output unchanged.
        */
-      vt_key[0].string = "Globals";
-      vt_key[1].string = "GameName";
-      gamename = prop_get_string (bundle, "S<-ss", vt_key);
+      gamename = prop_get_global_string (bundle, "GameName");
       pf_buffer_string (filter, "<font size=14><c>");
       pf_buffer_string (filter, gamename);
       pf_buffer_string (filter, "</c></font>");
@@ -2338,9 +2662,7 @@ run_main_loop (scr_gameref_t game)
       evt_start_load_events (game);
 
       /* If flagged, describe the initial room. */
-      vt_key[0].string = "Globals";
-      vt_key[1].string = "DispFirstRoom";
-      disp_first_room = prop_get_boolean (bundle, "B<-ss", vt_key);
+      disp_first_room = prop_get_global_boolean (bundle, "DispFirstRoom");
       if (disp_first_room)
         lib_cmd_look (game);
 

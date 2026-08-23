@@ -484,6 +484,59 @@ task_move_object (scr_gameref_t game, scr_int object, scr_int var2, scr_int var3
       return;
     }
 
+  /*
+   * Static objects do not move for a task action.  run400's object mover
+   * (Sub_20_11 @0008C200) skips them at @0008C360 -- "If Objects(o).Static = 1
+   * Then <next object>" -- before any destination case runs, so the refusal
+   * covers every destination, not just the room ones.  Measured live
+   * (RUNNER_TESTS_TODO.md section 9): a task whose action moves the referenced
+   * object to "held by player" prints its completion text for "grab plaque"
+   * and leaves the plaque exactly where it was, and a move-to-hidden aimed at
+   * a static the player is already holding (an event put it there) is refused
+   * in the same way.  Only the by-index selector is limited to dynamics, so
+   * without this test the "referenced object" selector would reach statics.
+   *
+   * The event mover keeps its own copy of this decision -- and does not make
+   * it, which is why evt_move_object() is the one and only way a static can
+   * reach the player's hands.
+   */
+  if (obj_is_static (game, object))
+    {
+      if (task_trace)
+        scr_trace ("Task: ignoring move of static object %ld\n", object);
+      return;
+    }
+
+  /*
+   * The Runner's task mover does its own carried-total accounting
+   * (Proc_19_10 in run400): if the object is currently in the player's
+   * possession (held or worn, recursing through carried containers and
+   * surfaces -- Proc_21_46), its size and weight come off the totals
+   * before the move; afterwards, a move to "held by player" adds size
+   * and weight back, and a move to "worn by player" adds weight only
+   * (worn things weigh but occupy no hand space, matching the loader's
+   * seeding).  The generic position tracker is suspended for the move so
+   * these rules replace, not compound, its take/drop model.
+   *
+   * The predicate is the Runner's own, not obj_indirectly_held_by_player():
+   * Proc_21_46 walks the bare container field and never looks at openness,
+   * so a task that lifts an object out of a CLOSED container the player is
+   * holding still refunds it.  Provenance's well puzzle is the case that
+   * settled it -- `close lid`, `lower bucket into well`, and the task
+   * swaps the empty canteen inside the shut bucket for a full one.  With
+   * the openness-aware predicate the empty canteen's 9/3 never came off,
+   * and every `count` for the rest of the game read 9 size and 3 weight
+   * high (measured against run400, 2026-08-23).
+   */
+  {
+    const scr_bool was_possessed = gs_runner_possessed (game, object);
+    const scr_int weight = obj_get_weight (game, object);
+    const scr_int size = obj_get_size (game, object);
+
+    gs_set_carried_suspend (game, TRUE);
+    if (was_possessed)
+      gs_carried_adjust (game, -weight, -size);
+
   /* Select action depending on var2. */
   switch (var2)
     {
@@ -526,6 +579,16 @@ task_move_object (scr_gameref_t game, scr_int object, scr_int var2, scr_int var3
       if (task_trace)
         scr_trace ("Task: moving object %ld into %ld\n", object, var3);
 
+      /*
+       * Runner quirk, faithfully kept: the "into object" branch repeats the
+       * possession-gated subtract (Proc_19_10 loc_48C48B) before it moves the
+       * object, on top of the universal one above -- the object is still in
+       * the player's possession when the gate re-runs, so a task that moves a
+       * carried object into a container takes its size and weight off the
+       * totals twice.  The "onto" branch has no such second subtract.
+       */
+      if (was_possessed)
+        gs_carried_adjust (game, -weight, -size);
       gs_object_move_into (game, object, obj_container_object (game, var3));
       break;
 
@@ -543,7 +606,22 @@ task_move_object (scr_gameref_t game, scr_int object, scr_int var2, scr_int var3
       if (var3 == 0)            /* Player */
         gs_object_player_get (game, object);
       else if (var3 == 1)       /* Ref character */
-        gs_object_npc_get (game, object, var_get_ref_character (vars));
+        {
+          const scr_int npc = var_get_ref_character (vars);
+
+          /*
+           * No referenced character: run400 abandons the move entirely,
+           * skipping the rest of its mover including the post-move seen
+           * re-check (Proc_19_10 tests its referenced-character global
+           * against the &HFF unset marker and exits, loc_48C650-48C65C).
+           */
+          if (npc < 0)
+            {
+              gs_set_carried_suspend (game, FALSE);
+              return;
+            }
+          gs_object_npc_get (game, object, npc);
+        }
       else                      /* NPC id */
         gs_object_npc_get (game, object, var3 - 2);
       break;
@@ -555,7 +633,18 @@ task_move_object (scr_gameref_t game, scr_int object, scr_int var2, scr_int var3
       if (var3 == 0)            /* Player */
         gs_object_player_wear (game, object);
       else if (var3 == 1)       /* Ref character */
-        gs_object_npc_wear (game, object, var_get_ref_character (vars));
+        {
+          const scr_int npc = var_get_ref_character (vars);
+
+          /* Unset referenced character: abandoned, as in the "held by"
+             case above (Proc_19_10 loc_48C79D-48C7A9). */
+          if (npc < 0)
+            {
+              gs_set_carried_suspend (game, FALSE);
+              return;
+            }
+          gs_object_npc_wear (game, object, npc);
+        }
       else                      /* NPC id */
         gs_object_npc_wear (game, object, var3 - 2);
       break;
@@ -575,6 +664,14 @@ task_move_object (scr_gameref_t game, scr_int object, scr_int var2, scr_int var3
         else if (var3 == 1)     /* Ref character */
           {
             npc = var_get_ref_character (vars);
+
+            /* Unset referenced character: abandoned, as in the "held by"
+               case above. */
+            if (npc < 0)
+              {
+                gs_set_carried_suspend (game, FALSE);
+                return;
+              }
             room = gs_npc_location (game, npc) - 1;
           }
         else                    /* NPC id */
@@ -597,6 +694,25 @@ task_move_object (scr_gameref_t game, scr_int object, scr_int var2, scr_int var3
                   " object move type %ld\n", var2);
       break;
     }
+
+    gs_set_carried_suspend (game, FALSE);
+
+    /* Post-move credit: into the player's hands or onto their back. */
+    if (gs_object_position (game, object) == OBJ_HELD_PLAYER)
+      gs_carried_adjust (game, weight, size);
+    else if (gs_object_position (game, object) == OBJ_WORN_PLAYER)
+      gs_carried_adjust (game, weight, 0);
+  }
+
+  /*
+   * The Runner's move-object action marks the moved object seen whenever
+   * the destination leaves it visible to the player (run400's executor,
+   * Proc_19_10, re-checks visibility after each destination case and sets
+   * the flag).  Without this, an object moved into a container in the
+   * player's presence would stay unreferenceable until re-listed.
+   */
+  if (obj_indirectly_in_room (game, object, gs_playerroom (game)))
+    gs_set_object_seen (game, object, TRUE);
 }
 
 
@@ -1141,16 +1257,11 @@ task_run_change_score_action (scr_gameref_t game, scr_int task, scr_int var1)
       increase_score = !gs_task_scored (game, task);
       if (!increase_score)
         {
-          scr_vartype_t vt_key[3];
-          scr_int version;
-
           if (task_trace)
             scr_trace ("Task: already scored task %ld\n", var1);
 
           /* Version 3.8 and 3.7 games permit tasks to rescore. */
-          vt_key[0].string = "Version";
-          version = prop_get_integer (bundle, "I<-s", vt_key);
-          if (version <= TAF_VERSION_380)
+          if (prop_get_taf_version (bundle) <= TAF_VERSION_380)
             {
               increase_score = !prop_get_indexed_boolean (bundle, "Tasks",
                                                           task, "SingleScore");
@@ -1211,7 +1322,7 @@ task_run_set_task_action (scr_gameref_t game, scr_int var1, scr_int var2)
           if (task_trace)
             scr_trace ("Task: redirecting to task %ld\n", var2);
 
-          status = task_run_task (game, var2, TRUE);
+          status = run_task_run_by_index (game, var2);
         }
       else
         {
@@ -1279,16 +1390,11 @@ task_print_end_game_summary (scr_gameref_t game, scr_bool is_win)
 {
   const scr_filterref_t filter = gs_get_filter (game);
   const scr_prop_setref_t bundle = gs_get_bundle (game);
-  scr_vartype_t vt_key[2];
   scr_int max_score, percent, version;
   scr_char buffer[32];
 
-  vt_key[0].string = "Globals";
-  vt_key[1].string = "MaxScore";
-  max_score = prop_get_integer (bundle, "I<-ss", vt_key);
-
-  vt_key[0].string = "Version";
-  version = prop_get_integer (bundle, "I<-s", vt_key);
+  max_score = prop_get_global_integer (bundle, "MaxScore");
+  version = prop_get_taf_version (bundle);
 
   /* The MaxScore > 0 guard arrived with 4.0.  A scoreless 4.0 game gets no
      summary and no trailing blank line -- measured in run400 on arena config
@@ -1804,10 +1910,8 @@ static scr_bool
 task_suppresses_additional_message (scr_gameref_t game)
 {
   const scr_prop_setref_t bundle = gs_get_bundle (game);
-  scr_vartype_t vt_key[1];
 
-  vt_key[0].string = "Version";
-  if (prop_get_integer (bundle, "I<-s", vt_key) != TAF_VERSION_380)
+  if (prop_get_taf_version (bundle) != TAF_VERSION_380)
     return FALSE;
 
   return pf_ends_with_double_space (gs_get_filter (game));
@@ -1969,6 +2073,12 @@ task_run_task_unrestricted (scr_gameref_t game, scr_int task, scr_bool forwards)
     {
       lib_print_room_name (game, showroomdesc - 1);
       lib_print_room_description (game, showroomdesc - 1);
+      /*
+       * The run400 room builder appends the exits list itself when the
+       * ShowExits global is set (@00472BFF in Proc_19_63_472CA4), so
+       * task-driven room displays include it too.
+       */
+      lib_print_room_exits (game, showroomdesc - 1);
       status |= TRUE;
     }
 

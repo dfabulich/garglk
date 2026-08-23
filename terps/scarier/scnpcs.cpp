@@ -292,9 +292,7 @@ npc_random_adjacent_roomgroup_member (scr_gameref_t game,
     return -1;
 
   /* How many exits to consider? */
-  vt_key[0].string = "Globals";
-  vt_key[1].string = "EightPointCompass";
-  eightpointcompass = prop_get_boolean (bundle, "B<-ss", vt_key);
+  eightpointcompass = prop_get_global_boolean (bundle, "EightPointCompass");
   if (eightpointcompass)
     length = sizeof (DIRNAMES_8) / sizeof (DIRNAMES_8[0]) - 1;
   else
@@ -356,9 +354,7 @@ npc_announce (scr_gameref_t game, scr_int npc,
   name = prop_get_string (bundle, "S<-sis", vt_key);
 
   /* Decide on four or eight point compass names list. */
-  vt_key[0].string = "Globals";
-  vt_key[1].string = "EightPointCompass";
-  eightpointcompass = prop_get_boolean (bundle, "B<-ss", vt_key);
+  eightpointcompass = prop_get_global_boolean (bundle, "EightPointCompass");
   dirnames = eightpointcompass ? DIRNAMES_8 : DIRNAMES_4;
 
   /* Set invariant key for room exit search. */
@@ -657,16 +653,32 @@ npc_tick_npc (scr_gameref_t game, scr_int npc)
       stoppingtask = prop_get_integer (bundle, "I<-sisis", vt_key) - 1;
 
       /*
-       * If any stopping task has completed, ignore this walk but don't
-       * actually finish it; more like an event pauser, then.
+       * A completed stopping task holds the walk at the top of its cycle: it
+       * neither finishes it -- un-completing the task starts it moving again
+       * -- nor merely freezes the counter where it stood.  Re-arming it every
+       * stopped turn is what reproduces run400 (probe `S` of
+       * make_400_walkprobe.py, three sessions live under Wine,
+       * RUNNER_TESTS_TODO.md section 9): with a looping two-stop walk,
+       * Times = 2 and 2, stopping the walk anywhere in the cycle and
+       * un-completing the task N turns later always yields the same thing --
+       * the walk runs a *fresh* cycle, arriving at stop 0 on the turn the task
+       * is un-completed.  Stop it with the walker away from stop 0 and
+       * "resume" prints its own text and the walker's arrival in one breath:
+       * `RESUME TASK DONE.  Bob BOB ENTERS..`.  Stop it with the walker
+       * already standing at stop 0 and that arrival is a move to where it
+       * already is, so nothing is printed and the next visible step comes two
+       * turns later -- the one-turn delay that looks like a lost tick but is
+       * the cycle starting over.
        *
-       * TODO Is this right?
+       * Scarier used to skip the tick and leave the counter alone, which
+       * resumed mid-cycle instead.
        */
       if (stoppingtask >= 0 && gs_task_done (game, stoppingtask))
         {
           if (npc_trace)
-            scr_trace ("NPC: ignoring NPC %ld walk, stop task done\n", npc);
+            scr_trace ("NPC: holding NPC %ld walk, stop task done\n", npc);
 
+          npc_start_npc_walk (game, npc, walk);
           continue;
         }
 
@@ -745,9 +757,9 @@ npc_tick_npcs (scr_gameref_t game)
    * (or drops) the MeetObject beside a mid-stay walker, so this block
    * rightly never looks at ObjectTask.
    *
-   * TODO Is this the right place to do this.  After ticking each NPC, rather
-   * than before, seems more appropriate.  But the messages come out in the
-   * right order by putting it here.
+   * Running this before ticking the NPCs, rather than after, is what puts
+   * the messages in the Runner's order; the probes above and the walkthrough
+   * corpus both validate the placement.
    *
    * Also, note that we take the shortcut of using the undo gamestate here,
    * rather than properly recording the prior location of the player, and

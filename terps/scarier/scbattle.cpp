@@ -761,9 +761,6 @@ static void
 battle_print_combatant (scr_gameref_t game, scr_int npc, scr_int form)
 {
   const scr_filterref_t filter = gs_get_filter (game);
-  const scr_prop_setref_t bundle = gs_get_bundle (game);
-  scr_vartype_t vt_key[3];
-  const scr_char *name;
 
   if (npc < 0)
     {
@@ -772,11 +769,7 @@ battle_print_combatant (scr_gameref_t game, scr_int npc, scr_int form)
       return;
     }
 
-  vt_key[0].string = "NPCs";
-  vt_key[1].integer = npc;
-  vt_key[2].string = "Name";
-  name = prop_get_string (bundle, "S<-sis", vt_key);
-  pf_buffer_string (filter, name);
+  lib_print_npc_np (game, npc);
   if (form == 2)
     pf_buffer_string (filter, "'s");
 }
@@ -870,7 +863,7 @@ battle_kill (scr_gameref_t game, scr_int npc, scr_bool visible)
        * no task text and no corpse line either (probe KT2: a done
        * non-repeatable KilledTask re-killed prints only the hit line). */
       if (task_can_run_task_directional (game, task, TRUE))
-        task_run_task (game, task, TRUE);
+        run_task_run_by_index (game, task);
     }
   else if (visible && !battle_legacy)
     {
@@ -929,7 +922,7 @@ battle_apply_damage (scr_gameref_t game, scr_int npc, scr_int damage,
        * site) -- see the room-eligibility note in battle_kill. */
       task = battle_npc_battle_task (game, npc, "StaminaTask");
       if (task >= 0 && task_can_run_task_directional (game, task, TRUE))
-        task_run_task (game, task, TRUE);
+        run_task_run_by_index (game, task);
     }
 }
 

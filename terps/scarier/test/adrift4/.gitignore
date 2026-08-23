@@ -1,0 +1,48 @@
+# Third-party game data (.taf) is never committed (§6 step 4 of
+# TODO_plover_walkthroughs.md). run_v4_walkthroughs.sh reads games from here by
+# basename; recreate with symlinks or set GAMES_DIR on another machine.
+/games/
+
+# Downloaded third-party walkthrough documents (source material for the
+# derivations in notes/); not ours to commit.
+/downloaded/
+
+# Archie's Birthday (AIF): explicit text, deliberately not committed.
+/notes/Archies_Birthday_walkthrough.md
+/goldens/archie_solution.txt
+/goldens/archie_solution.expected.txt
+
+# Diary of a Stripper (AIF): explicit text, deliberately not committed.
+/notes/Diary_of_a_Stripper_walkthrough.md
+/goldens/diarystrip_solution.txt
+/goldens/diarystrip_solution.expected.txt
+
+# Camp Windy Lake : Part 2 (AIF): explicit text, deliberately not committed.
+/goldens/windy2_solution.txt
+/goldens/windy2_solution.expected.txt
+
+# Lara Croft : The Sun Obelisk (AIF): explicit text, deliberately not committed.
+/goldens/croft_solution.txt
+/goldens/croft_solution.expected.txt
+
+# Doctor Who and the Vortex of Lust (AIF): explicit text, deliberately not
+# committed.
+/goldens/dr-who-vortex-lust_solution.txt
+/goldens/dr-who-vortex-lust_solution.expected.txt
+
+# The Gamma Gals (AIF): explicit text, deliberately not committed.
+/goldens/gamma_solution.txt
+/goldens/gamma_solution.expected.txt
+
+# The Wingman (AIF): explicit text, deliberately not committed.
+/goldens/wingman1_solution.txt
+/goldens/wingman1_solution.expected.txt
+
+# The croft.taf SYNONYM-precedence probe generator.  It is a faithful
+# reduction of an AIF file and is built from that game's own vocabulary, so
+# it stays local like the solutions above; the finding it measured is
+# recorded, in schematic form, in the croft comment block in
+# harness/run_v4_walkthroughs.sh and in notes/WALKTHROUGH_TODO.md.
+/harness/make_39_synprobe.py
+/harness/pSYN.taf
+/harness/pSYN.taf.plain

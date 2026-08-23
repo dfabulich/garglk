@@ -183,6 +183,19 @@ scr_dump_structure_once (scr_gameref_t game)
                * against MaxCarried.  Absent (-1/0) for 3.9 and 4.0 games. */
               swk[2].string = "SizeWeightClass";
               if (prop_get (bundle, "I<-sis", &bv, swk)) swclass = bv.integer;
+              /* The raw .taf Parent field, printed even when Position says the
+               * object is not inside/on anything: the Runner's recursive
+               * weight scan (Sub_22_63) matches children on this field alone,
+               * with no position check, so a stale Parent silently adds an
+               * elsewhere-located object's weight to this container's. */
+              {
+                scr_int rawpar = -1;
+                swk[2].string = "Parent";
+                if (prop_get (bundle, "I<-sis", &bv, swk)) rawpar = bv.integer;
+                fprintf (stderr, "OBJLOC-RAWPAR obj=%ld rawparent=%ld"
+                         " runner_parent=%ld\n",
+                         i, rawpar, gs_object_runner_parent (game, i));
+              }
               fprintf (stderr,
                        "OBJLOC obj=%ld pos=%ld room=%ld parent=%ld effroom=%ld"
                        " static=%ld unmoved=%ld open=%ld state=%ld hit=%ld"
@@ -294,6 +307,38 @@ scr_dump_structure_once (scr_gameref_t game)
       s = scdump_object_name (game, oo);
       fprintf (stderr, "CONTAINER idx=%ld obj=%ld [%s]\n", i, oo, s ? s : "");
     }
+
+  /* Stateful-object enumeration (Openable != 0 or CurrentState != 0, in
+   * object order).  Task object-state restrictions and change-object-status
+   * actions address this list 1-based; room-alt type 1 Var2 does NOT (it is
+   * a 1-based global object number -- see lib_use_room_alt). */
+  {
+    scr_int idx = 0;
+    for (i = 0; i < gs_object_count (game); i++)
+      {
+        scr_vartype_t pk[3], pv;
+        scr_int openable, curstate;
+        const scr_char *states = NULL, *s;
+        pk[0].string = "Objects";
+        pk[1].integer = i;
+        pk[2].string = "Openable";
+        openable = prop_get (bundle, "I<-sis", &pv, pk) ? pv.integer : 0;
+        pk[2].string = "CurrentState";
+        curstate = prop_get (bundle, "I<-sis", &pv, pk) ? pv.integer : 0;
+        if (openable == 0 && curstate == 0)
+          continue;
+        idx++;
+        pk[2].string = "States";
+        if (prop_get (bundle, "S<-sis", &pv, pk))
+          states = pv.string;
+        s = scdump_object_name (game, i);
+        fprintf (stderr,
+                 "STATEFUL idx=%ld obj=%ld [%s] openable=%ld curstate=%ld"
+                 " states=[%s]\n",
+                 idx, i, s ? s : "", openable, curstate,
+                 states ? states : "");
+      }
+  }
 
   /* Static-object room membership (the "Where" list). Dynamic objects are
    * located via the debugger; statics have no single position, so list every
@@ -871,8 +916,9 @@ scr_dump_structure_once (scr_gameref_t game)
                   {
                     scr_int obj = obj_stateful_object (game, v1 - 1);
                     const scr_char *s = scdump_object_name (game, obj);
-                    fprintf (stderr, " gateObj=%ld [%s] wantState=%ld\n",
-                             obj, s ? s : "", v2);
+                    fprintf (stderr, " gateObj=%ld [%s] wantState=%ld"
+                             " rawV1=%ld\n",
+                             obj, s ? s : "", v2, v1);
                   }
               }
           }

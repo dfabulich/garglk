@@ -146,6 +146,26 @@ ser_set_fast_compression (scr_bool fast)
   ser_compression = fast ? Z_BEST_SPEED : Z_DEFAULT_COMPRESSION;
 }
 
+/*
+ * Raw (uncompressed) mode for the next serialization run.  The undo ring's
+ * in-memory memos are a self-contained round trip that never touches disk and
+ * never interoperates with a Runner, so they can skip zlib entirely: profiling
+ * put the per-turn deflate at ~20-48% of the interpreter, and it buys nothing
+ * for a buffer we rewrite every 16 turns and read back ourselves.  memo_save_-
+ * game()/memo_load_game() set this around their ser_save_game()/ser_load_game()
+ * calls; the save side (ser_flush) then passes bytes straight through, and the
+ * load side (ser_load_game) reads them back via taf_create_tas_raw().  File
+ * saves never set it, so their zlib format -- and the save-file sniffer -- are
+ * untouched.  Both entry points self-clear it, like ser_pre_v4.
+ */
+static scr_bool ser_raw_memo = FALSE;
+
+void
+ser_set_raw_memo (scr_bool raw)
+{
+  ser_raw_memo = raw;
+}
+
 /* Output buffer. */
 static scr_byte *ser_buffer = NULL;
 static scr_int ser_buffer_length = 0;
@@ -170,6 +190,27 @@ ser_flush (scr_bool is_final)
   static z_stream stream;
 
   scr_int status;
+
+  /*
+   * A raw memo is passed straight through, uncompressed and unobfuscated --
+   * taf_create_tas_raw() reads it back verbatim.  Like the pre-4.0 branch it
+   * never touches the deflate state, so the 4.0 path below is unaffected.
+   */
+  if (ser_raw_memo)
+    {
+      if (ser_buffer_length > 0)
+        {
+          ser_callback (ser_opaque, ser_buffer, ser_buffer_length);
+          ser_buffer_length = 0;
+        }
+
+      if (is_final)
+        {
+          scr_free (ser_buffer);
+          ser_buffer = NULL;
+        }
+      return;
+    }
 
   /*
    * A pre-4.0 save is not compressed at all: the plain text goes out xor'd
@@ -740,10 +781,7 @@ ser_variable_at (scr_prop_setref_t bundle, scr_int index_,
 static scr_bool
 ser_game_is_pre_v4 (scr_prop_setref_t bundle)
 {
-  scr_vartype_t vt_key[1];
-
-  vt_key[0].string = "Version";
-  return prop_get_integer (bundle, "I<-s", vt_key) < TAF_VERSION_400;
+  return prop_get_taf_version (bundle) < TAF_VERSION_400;
 }
 
 
@@ -993,6 +1031,7 @@ ser_save_game_internal (scr_gameref_t game, scr_write_callbackref_t callback,
   ser_callback = NULL;
   ser_opaque = NULL;
   ser_pre_v4 = FALSE;
+  ser_raw_memo = FALSE;
 }
 
 void
@@ -1312,10 +1351,17 @@ ser_load_game (scr_gameref_t game,
   const scr_char *gamename;
   scr_bool runner_format = FALSE;
 
-  /* Create a TAF (TAS) reference from callbacks, for reader functions. */
-  ser_tas = taf_create_tas (callback, opaque);
+  /* Create a TAF (TAS) reference from callbacks, for reader functions.  A raw
+   * memo (ser_set_raw_memo) skips the sniff/inflate and is read back verbatim;
+   * everything downstream is identical, since the byte stream is the same one
+   * a decompressed 4.0 save would present. */
+  ser_tas = ser_raw_memo ? taf_create_tas_raw (callback, opaque)
+                         : taf_create_tas (callback, opaque);
   if (!ser_tas)
-    return FALSE;
+    {
+      ser_raw_memo = FALSE;
+      return FALSE;
+    }
 
   /*
    * The container tells us the layout: only run390.exe -- and ser_save_game_-
@@ -1347,6 +1393,7 @@ ser_load_game (scr_gameref_t game,
       taf_destroy (ser_tas);
       ser_tas = NULL;
       ser_pre_v4 = FALSE;
+      ser_raw_memo = FALSE;
       return FALSE;
     }
 
@@ -1481,6 +1528,41 @@ ser_load_game (scr_gameref_t game,
        * OnlyWhenNotMoved stands, exactly as it does in the 3.9 Runner. */
       if (!ser_pre_v4)
         gs_set_object_unmoved (new_game, index_, ser_get_boolean ());
+
+      /*
+       * Reconstruct the Runner's container field ([2E]) -- see the
+       * runner_parent notes in scgamest.h.  No save format stores it, so
+       * this is a heuristic built on the detach model: an in/on placement
+       * points it at the restored parent; NPC possession clears it; an
+       * object that *started* in/on but is no longer there must have been
+       * detached at some point, so it is cleared too.  Everything else
+       * keeps the raw .taf Parent seed gs_create() gave it, which the
+       * Runner's ordinary take/drop/task moves never touch.  The one case
+       * this gets wrong is a raw-Parent object that was worn and then
+       * removed -- the save cannot tell us.
+       */
+      if (obj_is_static (new_game, index_))
+        gs_set_object_runner_parent (new_game, index_, -1);
+      else
+        {
+          const scr_int position = new_game->objects[index_].position;
+
+          if (position == OBJ_IN_OBJECT || position == OBJ_ON_OBJECT)
+            gs_set_object_runner_parent (new_game, index_,
+                                         new_game->objects[index_].parent);
+          else if (position == OBJ_HELD_NPC || position == OBJ_WORN_NPC)
+            gs_set_object_runner_parent (new_game, index_, -1);
+          else
+            {
+              scr_int initialposition;
+
+              vt_key[2].string = "InitialPosition";
+              initialposition = prop_get_integer (bundle, "I<-sis", vt_key);
+              if (initialposition == 2 || initialposition == 3)
+                gs_set_object_runner_parent (new_game, index_, -1);
+              /* Otherwise the seed from gs_create() stands. */
+            }
+        }
     }
 
   /* Restore tasks information. */
@@ -1619,6 +1701,13 @@ ser_load_game (scr_gameref_t game,
   new_game->requested_graphic = game->requested_graphic;
 
   /*
+   * Reseed the carried-load totals from the restored inventory the way the
+   * run400 save loader does (base weights and sizes only; see
+   * gs_carried_recompute).  gs_copy() then carries them over verbatim.
+   */
+  gs_carried_recompute (new_game);
+
+  /*
    * If we got this far, we successfully restored the game from the file.
    * As our final act, copy the new game onto the old one.
    */
@@ -1634,6 +1723,7 @@ ser_load_game (scr_gameref_t game,
   taf_destroy (ser_tas);
   ser_tas = NULL;
   ser_pre_v4 = FALSE;
+  ser_raw_memo = FALSE;
   return TRUE;
 }
 

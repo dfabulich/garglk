@@ -281,7 +281,16 @@ evt_move_object (scr_gameref_t game, scr_int object, scr_int destination)
                     object, destination);
         }
 
-      /* Move object depending on destination. */
+      /*
+       * Move object depending on destination.  The Runner's event mover
+       * never touches the carried-load totals -- an event-placed object
+       * weighs nothing towards the player's limits, and one spirited out
+       * of the player's hands stays counted (measured live in run400,
+       * RUNNER_TESTS_TODO.md section 9; its totals are only ever written
+       * by the take/drop handlers and the task mover) -- so the position
+       * tracker is suspended for the move.
+       */
+      gs_set_carried_suspend (game, TRUE);
       switch (destination)
         {
         case -1:               /* Hidden. */
@@ -310,12 +319,18 @@ evt_move_object (scr_gameref_t game, scr_int object, scr_int destination)
             }
           break;
         }
+      gs_set_carried_suspend (game, FALSE);
 
       /*
        * If static, mark as no longer unmoved.
        *
-       * TODO Is this the only place static objects can be moved?  And just
-       * how static is a static object if it's moveable, anyway?
+       * This is the only place a static object moves.  The task action mover
+       * refuses them outright (see task_move_object), so an event is the sole
+       * route by which one can reach the player's hands -- measured live in
+       * run400, RUNNER_TESTS_TODO.md section 9.  A static that gets there is
+       * listed by "inventory", but the Runner does not otherwise count it as
+       * held: it weighs nothing towards the player's limits and cannot be
+       * dropped, which is what obj_get_size/obj_get_weight's zero preserves.
        */
       if (obj_is_static (game, object))
         gs_set_object_static_unmoved (game, object, FALSE);
@@ -339,11 +354,7 @@ evt_taf_version (scr_gameref_t game, scr_int event)
   version = evt_cache_version;
   if (version == 0)
     {
-      const scr_prop_setref_t bundle = gs_get_bundle (game);
-      scr_vartype_t vt_key[1];
-
-      vt_key[0].string = "Version";
-      version = prop_get_integer (bundle, "I<-s", vt_key);
+      version = prop_get_taf_version (gs_get_bundle (game));
       evt_cache_version = version;
     }
   return version;
@@ -455,7 +466,7 @@ evt_start_event (scr_gameref_t game, scr_int event, scr_bool silent)
 
   time1 = evt_cached_integer (game, event, EVT_TIME1, "Time1");
   time2 = evt_cached_integer (game, event, EVT_TIME2, "Time2");
-  gs_set_event_time (game, event, scr_randomint (time1, time2));
+  gs_set_event_time (game, event, scr_randomint_exclusive (time1, time2));
 
   if (evt_trace)
     scr_trace ("Event: start event handling done, %ld\n", event);
@@ -601,7 +612,7 @@ evt_finish_event (scr_gameref_t game, scr_int event)
           if (evt_trace)
             scr_trace ("Event: event running task %ld forwards\n", task);
 
-          task_run_task (game, task, TRUE);
+          run_task_run_by_index (game, task);
         }
       else
         {
@@ -691,7 +702,8 @@ evt_finish_event (scr_gameref_t game, scr_int event)
             start = evt_cached_integer (game, event, EVT_START_TIME,
                                         "StartTime");
             end = evt_cached_integer (game, event, EVT_END_TIME, "EndTime");
-            gs_set_event_time (game, event, scr_randomint (start, end));
+            gs_set_event_time (game, event,
+                               scr_randomint_exclusive (start, end));
             break;
           }
 
@@ -889,7 +901,8 @@ evt_tick_event (scr_gameref_t game, scr_int event)
          * immediately, its time will already be zero, even before decrement,
          * which is how we tell which events to apply this hack to.
          *
-         * TODO This seems to work, but also seems very dodgy.
+         * Inelegant, but it yields the Runner's timer values, and the
+         * walkthrough corpus validates it.
          */
         if (gs_event_time (game, event) == 0)
           {
@@ -1013,6 +1026,17 @@ evt_tick_event (scr_gameref_t game, scr_int event)
               evt_finish_event (game, event);
             else
               {
+                /*
+                 * The start turn itself must not consume a tick.  Measured
+                 * against run400 with Provenance's fixed-length "Air Runs
+                 * Out In Lab" event (task-started, Time1 = Time2 = 15,
+                 * mid-texts at 10 and 5 remaining): the Runner prints the
+                 * StartText on the turn the starter task completes, but its
+                 * 10-left, 5-left and finish texts each landed one turn
+                 * after ours did.  Adding one here, the same adjustment the
+                 * ES_WAITING immediate-start hack above makes, reproduces
+                 * the Runner's timing exactly.
+                 */
                 /*
                  * If the pauser has completed, but resumer not, immediately
                  * also pause this event.

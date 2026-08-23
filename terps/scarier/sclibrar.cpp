@@ -33,6 +33,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <string>
 #include <vector>
 
 #include "scarier.h"
@@ -181,7 +182,7 @@ lib_use_room_alt (scr_gameref_t game, scr_int room, scr_int alt)
 
     case 1:                    /* Stateful object. */
       {
-        scr_int var2, var3, object;
+        scr_int var2, var3;
 
         vt_key[4].string = "Var2";
         var2 = prop_get_integer (bundle, "I<-sisis", vt_key);
@@ -192,8 +193,24 @@ lib_use_room_alt (scr_gameref_t game, scr_int room, scr_int alt)
             vt_key[4].string = "Var3";
             var3 = prop_get_integer (bundle, "I<-sisis", vt_key);
 
-            object = obj_stateful_object (game, var2 - 1);
-            retval = restr_pass_task_object_state (game, object + 1, var3 - 1);
+            /*
+             * Var2 here is a 1-based GLOBAL object number, NOT an index
+             * into the stateful-object list like a task object-state
+             * restriction's Var1.  Proof is corpus-wide: Professor Von
+             * Witt's Laboratory alts carry Var2 = 5 for the mailbox, which
+             * is stateful object #1 but global object #5 (run400 displays
+             * the alt keyed on the mailbox's state); and many games author
+             * Var2 far beyond their stateful-object count, which no
+             * stateful reading could address at all -- Beanstalk 8 of 3,
+             * Terrified 30 of 3, Showtime at the Gallows 59 of 1,
+             * goldilocks 90 of 22, cursed 683.  (Task restrictions and
+             * change-status actions really are stateful-indexed: across
+             * the 107 corpus games using them, no index exceeds the
+             * stateful count.)  SCARE always mapped Var2 through the
+             * stateful list here, so every one of these alts tested the
+             * wrong object's state.
+             */
+            retval = restr_object_in_state (game, var2 - 1, var3 - 1);
           }
         break;
       }
@@ -561,52 +578,19 @@ lib_print_object (scr_gameref_t game, scr_int object)
 
 /*
  * lib_print_npc_np
- * lib_print_npc
  *
- * Convenience functions to print out an NPC's name, with and without
- * any prefix.
+ * Convenience function to print out an NPC's name, without any prefix.
  */
-static void
+void
 lib_print_npc_np (scr_gameref_t game, scr_int npc)
 {
   const scr_filterref_t filter = gs_get_filter (game);
   const scr_prop_setref_t bundle = gs_get_bundle (game);
-  scr_vartype_t vt_key[3];
-  const scr_char *name;
 
   /* Get the NPC's short description, and print it. */
-  vt_key[0].string = "NPCs";
-  vt_key[1].integer = npc;
-  vt_key[2].string = "Name";
-  name = prop_get_string (bundle, "S<-sis", vt_key);
-
-  pf_buffer_string (filter, name);
+  pf_buffer_string (filter,
+                    prop_get_indexed_string (bundle, "NPCs", npc, "Name"));
 }
-
-#if 0
-static void
-lib_print_npc (scr_gameref_t game, scr_int npc)
-{
-  const scr_filterref_t filter = gs_get_filter (game);
-  const scr_prop_setref_t bundle = gs_get_bundle (game);
-  scr_vartype_t vt_key[3];
-  const scr_char *prefix;
-
-  /* Get the NPC's prefix. */
-  vt_key[0].string = "NPCs";
-  vt_key[1].integer = npc;
-  vt_key[2].string = "Prefix";
-  prefix = prop_get_string (bundle, "S<-sis", vt_key);
-
-  /* If the prefix isn't empty, print it, then print NPC name. */
-  if (!scr_strempty (prefix))
-    {
-      pf_buffer_string (filter, prefix);
-      pf_buffer_character (filter, ' ');
-    }
-  lib_print_npc_np (game, npc);
-}
-#endif
 
 
 /*
@@ -635,17 +619,12 @@ static scr_int
 lib_get_perspective (scr_gameref_t game)
 {
   const scr_prop_setref_t bundle = gs_get_bundle (game);
-  scr_vartype_t vt_key[2];
-  scr_int perspective, version;
+  scr_int perspective;
 
-  vt_key[0].string = "Globals";
-  vt_key[1].string = "Perspective";
-  perspective = prop_get_integer (bundle, "I<-ss", vt_key);
+  perspective = prop_get_global_integer (bundle, "Perspective");
 
-  vt_key[0].string = "Version";
-  version = prop_get_integer (bundle, "I<-s", vt_key);
-
-  if (version < TAF_VERSION_400 && perspective != LIB_FIRST_PERSON)
+  if (prop_get_taf_version (bundle) < TAF_VERSION_400
+      && perspective != LIB_FIRST_PERSON)
     return LIB_SECOND_PERSON;
 
   return perspective;
@@ -662,11 +641,25 @@ lib_get_perspective (scr_gameref_t game)
 static scr_bool
 lib_is_version_400 (scr_gameref_t game)
 {
-  const scr_prop_setref_t bundle = gs_get_bundle (game);
-  scr_vartype_t vt_key[1];
+  return prop_get_taf_version (gs_get_bundle (game)) >= TAF_VERSION_400;
+}
 
-  vt_key[0].string = "Version";
-  return prop_get_integer (bundle, "I<-s", vt_key) >= TAF_VERSION_400;
+
+/*
+ * lib_matcher_requires_seen()
+ *
+ * TRUE if the parser's object matcher should reject objects the player
+ * hasn't seen yet.  The 3.9 and 4.0 Runners both gate every name match on
+ * the object's seen flag (run390 co() tests the flag alongside obhere();
+ * run400's matcher requires it in every match mode), so an object inside
+ * an unlisted container "doesn't exist" until a room description, contents
+ * listing, or examination reveals it.  The 3.8 Runner's co()/obhere() have
+ * no such test -- there the seen flag only feeds the where/find command.
+ */
+static scr_bool
+lib_matcher_requires_seen (scr_gameref_t game)
+{
+  return prop_get_taf_version (gs_get_bundle (game)) >= TAF_VERSION_390;
 }
 
 
@@ -990,6 +983,46 @@ lib_get_npc_inroom_text (scr_gameref_t game, scr_int npc)
 
 
 /*
+ * lib_npc_text_is_default()
+ *
+ * TRUE if an NPC's in-room text is one the room lister folds into its joined
+ * "X, Y and Z are here." sentence -- that is, one ending in " is here.".  The
+ * Runner's "#" has already become such a text by the time its lister runs;
+ * see the note in lib_print_room_contents().  Exact and case-sensitive, as
+ * measured: "Golf is here!" and "Hotel IS HERE." are not folded.
+ */
+enum { LIB_NPC_HERE_LENGTH = 9 };       /* strlen (" is here.") */
+
+/*
+ * lib_skip_leading_breaks()
+ *
+ * Advance past any run of leading line breaks -- literal newlines or "<br>"
+ * tags -- that an author put at the front of a character's in-room text so
+ * that the character would start on a line of its own.  Scarier is already on
+ * a line of its own there; see the note in lib_print_room_contents().
+ */
+static const scr_char *
+lib_skip_leading_breaks (const scr_char *text)
+{
+  while (*text == '\n' || !scr_strncasecmp (text, "<br>", 4))
+    text += (*text == '\n') ? 1 : 4;
+
+  return text;
+}
+
+static scr_bool
+lib_npc_text_is_default (const scr_char *description)
+{
+  static const scr_char *const SUFFIX = " is here.";
+
+  scr_int length = strlen (description);
+
+  return length > LIB_NPC_HERE_LENGTH
+         && strcmp (description + length - LIB_NPC_HERE_LENGTH, SUFFIX) == 0;
+}
+
+
+/*
  * lib_print_room_contents()
  *
  * Print a list of the contents of a room.
@@ -1003,7 +1036,19 @@ lib_print_room_contents (scr_gameref_t game, scr_int room)
   scr_int object, npc, count;
   lib_list_t list;
 
-  /* List all objects that show their initial description. */
+  /*
+   * List all objects that show their initial description.
+   *
+   * The Runner's room lister (run400 @00472515, re-checked by its helper
+   * @00449B6C) prints an object's InRoomDesc only when ListFlag matches the
+   * object's kind: a dynamic object needs ListFlag clear, while a STATIC
+   * object needs ListFlag ("specifically list") SET.  A static object with
+   * an InRoomDesc but no ListFlag prints nothing -- authors use that for
+   * text mirrored in the room description itself (Goldilocks' hall trapdoor,
+   * whose "[TRAP=...]" sentence is already part of the room's long text).
+   * Pre-4.0 games have no InRoomDesc property at all, so the gate only ever
+   * bites on version 4.0 games.
+   */
   count = 0;
   for (object = 0; object < gs_object_count (game); object++)
     {
@@ -1011,10 +1056,16 @@ lib_print_room_contents (scr_gameref_t game, scr_int room)
           && obj_shows_initial_description (game, object))
         {
           const scr_char *inroomdesc;
+          scr_bool listflag;
 
-          /* Find and print in room description. */
           vt_key[0].string = "Objects";
           vt_key[1].integer = object;
+          vt_key[2].string = "ListFlag";
+          listflag = prop_get_boolean (bundle, "B<-sis", vt_key);
+          if (listflag != obj_is_static (game, object))
+            continue;
+
+          /* Find and print in room description. */
           vt_key[2].string = "InRoomDesc";
           inroomdesc = prop_get_string (bundle, "S<-sis", vt_key);
           if (!scr_strempty (inroomdesc))
@@ -1073,6 +1124,105 @@ lib_print_room_contents (scr_gameref_t game, scr_int room)
       pf_buffer_string (filter, ".\n");
     }
 
+  /*
+   * List the NPCs in the room.  A "#" in-room text asks for the default
+   * "<name> is here.", and the Runner splits the room's characters into the
+   * ones saying exactly that -- joined into one sentence -- and the ones with
+   * something of their own to say.
+   *
+   * Two things about that split are not what they look like, both measured
+   * live in run400 (RUNNER_TESTS_TODO.md section 9).  The "#" substitution
+   * happens in the *loader* (@00091EDF): the text simply becomes "<name> is
+   * here." before the game starts, and by the time the room lister
+   * (@00072944) runs there is no "#" left to test for.  What it tests instead
+   * is the tail -- Right(text, 9) = " is here." -- so a character whose text
+   * the author wrote out in full joins the sentence too, contributing the text
+   * with those nine characters trimmed off rather than its own name.  Probe
+   * NPCs "Delta" ("Delta is here.") and "Foxtrot" ("The stranger is here.")
+   * come out as "Alpha, Charlie, Delta and The stranger are here.", so it is
+   * the text that is trimmed and not the name that is looked up.  The test is
+   * exact and case-sensitive: "Golf is here!" and "Hotel IS HERE." both stay
+   * in the second group.
+   *
+   * And the joined sentence comes *first*, ahead of the characters with their
+   * own text, which is the other half of what Scarier had backwards.
+   */
+  {
+    std::vector<std::string> joined;
+
+    for (npc = 0; npc < gs_npc_count (game); npc++)
+      {
+        const scr_char *description;
+
+        if (!npc_in_room (game, npc, room))
+          continue;
+
+        description = lib_get_npc_inroom_text (game, npc);
+        if (!scr_strcasecmp (description, "#"))
+          {
+            joined.push_back (prop_get_indexed_string (bundle, "NPCs",
+                                                       npc, "Name"));
+          }
+        else
+          {
+            /*
+             * Drop any leading break the author wrote to put this character on
+             * a line of its own -- the joined sentence already is one -- and
+             * trim the suffix to get the name the Runner joins in.
+             */
+            description = lib_skip_leading_breaks (description);
+            if (lib_npc_text_is_default (description))
+              {
+                joined.push_back (std::string (description,
+                                               strlen (description)
+                                               - LIB_NPC_HERE_LENGTH));
+              }
+          }
+      }
+
+    if (!joined.empty ())
+      {
+        const scr_char *buffered;
+        size_t index_;
+
+        /*
+         * Start a line, but only one.  The Runner runs this straight on from
+         * the room description inside the turn's single paragraph, with the
+         * characters that have their own text following just as directly;
+         * Scarier prints the room block as sections, one list to a line, and
+         * this joins that convention -- the section-vs-paragraph difference is
+         * the standing one in RUNNER_TESTS_TODO.md section 3.  The same test
+         * the custom-text loop below makes, for the same reason: whatever came
+         * before usually ended with a break already, and a second one would
+         * open a gap the Runner has no counterpart for.
+         *
+         * This is a change for the "#" characters, whose sentence used to be
+         * preceded by an unconditional break and so by a blank line.  Back
+         * then the sentence could hold nothing else and always stood alone;
+         * now that the authors' own " is here." texts join it, a group set off
+         * by a blank line from the very characters it belongs with reads as an
+         * accident rather than a choice.
+         */
+        buffered = pf_get_buffer (filter);
+        if (!(buffered && pf_text_ends_with_break (buffered)))
+          pf_buffer_character (filter, '\n');
+        pf_new_sentence (filter);
+        for (index_ = 0; index_ < joined.size (); index_++)
+          {
+            if (index_ > 0)
+              {
+                pf_buffer_string (filter,
+                                  index_ == joined.size () - 1
+                                  ? " and " : ", ");
+              }
+            pf_buffer_string (filter, joined[index_].c_str ());
+          }
+        pf_buffer_string (filter,
+                          joined.size () == 1 ? " is here" : " are here");
+        pf_buffer_string (filter, ".\n");
+      }
+  }
+
   /* List NPCs directly in the room that have an in room description. */
   count = 0;
   for (npc = 0; npc < gs_npc_count (game); npc++)
@@ -1081,9 +1231,12 @@ lib_print_room_contents (scr_gameref_t game, scr_int room)
         {
           const scr_char *description;
 
-          /* Print any non='#' in-room description. */
+          /* Print any text not already folded into the sentence above. */
           description = lib_get_npc_inroom_text (game, npc);
-          if (!scr_strempty (description) && scr_strcasecmp (description, "#"))
+          if (!scr_strempty (description)
+              && scr_strcasecmp (description, "#")
+              && !lib_npc_text_is_default (lib_skip_leading_breaks
+                                             (description)))
             {
               const scr_char *buffered;
               scr_bool buffer_has_break, desc_has_break;
@@ -1129,35 +1282,6 @@ lib_print_room_contents (scr_gameref_t game, scr_int room)
     }
   if (count > 0)
     pf_buffer_character (filter, '\n');
-
-  /*
-   * List NPCs in the room that don't have an in room description and that
-   * request a default "...is here" with "#".
-   *
-   * TODO Is this right?
-   */
-  list.clear ();
-  for (npc = 0; npc < gs_npc_count (game); npc++)
-    {
-      if (npc_in_room (game, npc, room))
-        {
-          const scr_char *description;
-
-          /* Print name for descriptions marked '#'. */
-          description = lib_get_npc_inroom_text (game, npc);
-          if (!scr_strempty (description) && !scr_strcasecmp (description, "#"))
-            list.push_back (npc);
-        }
-    }
-  if (!list.empty ())
-    {
-      pf_buffer_character (filter, '\n');
-      pf_new_sentence (filter);
-      lib_print_list (game, list, lib_print_npc_np, " and ");
-      pf_buffer_string (filter,
-                        list.size () == 1 ? " is here" : " are here");
-      pf_buffer_string (filter, ".\n");
-    }
 }
 
 
@@ -1517,30 +1641,80 @@ lib_direction_name (scr_int direction)
 }
 
 
+/*
+ * lib_compass_names()
+ *
+ * Return the direction names list for the game's compass, eight point or
+ * four.
+ */
+static const scr_char *const *
+lib_compass_names (scr_gameref_t game)
+{
+  const scr_prop_setref_t bundle = gs_get_bundle (game);
+
+  return prop_get_global_boolean (bundle, "EightPointCompass")
+         ? DIRNAMES_8 : DIRNAMES_4;
+}
+
+
+/*
+ * lib_room_exit_available()
+ *
+ * Return TRUE if the given room defines an exit in the given direction and
+ * nothing currently blocks its use.
+ */
 static scr_bool
-lib_room_has_exits (scr_gameref_t game)
+lib_room_exit_available (scr_gameref_t game, scr_int room, scr_int direction)
 {
   const scr_prop_setref_t bundle = gs_get_bundle (game);
   scr_vartype_t vt_key[4], vt_rvalue;
-  scr_bool eightpointcompass;
+
+  vt_key[0].string = "Rooms";
+  vt_key[1].integer = room;
+  vt_key[2].string = "Exits";
+  vt_key[3].integer = direction;
+  return prop_get (bundle, "I<-sisi", &vt_rvalue, vt_key)
+         && lib_can_go (game, room, direction);
+}
+
+
+/*
+ * lib_room_exit_destination()
+ *
+ * Return TRUE and write the destination of the player room's exit in the
+ * given direction, FALSE if the room defines no such exit.
+ */
+static scr_bool
+lib_room_exit_destination (scr_gameref_t game,
+                           scr_int direction, scr_int *destination)
+{
+  const scr_prop_setref_t bundle = gs_get_bundle (game);
+  scr_vartype_t vt_key[5], vt_rvalue;
+
+  vt_key[0].string = "Rooms";
+  vt_key[1].integer = gs_playerroom (game);
+  vt_key[2].string = "Exits";
+  vt_key[3].integer = direction;
+  vt_key[4].string = "Dest";
+  if (!prop_get (bundle, "I<-sisis", &vt_rvalue, vt_key))
+    return FALSE;
+
+  *destination = vt_rvalue.integer - 1;
+  return TRUE;
+}
+
+
+static scr_bool
+lib_room_has_exits (scr_gameref_t game, scr_int room)
+{
   const scr_char *const *dirnames;
   scr_int index_;
 
-  /* Decide on four or eight point compass names list. */
-  vt_key[0].string = "Globals";
-  vt_key[1].string = "EightPointCompass";
-  eightpointcompass = prop_get_boolean (bundle, "B<-ss", vt_key);
-  dirnames = eightpointcompass ? DIRNAMES_8 : DIRNAMES_4;
-
   /* Return on the first valid, usable exit found. */
+  dirnames = lib_compass_names (game);
   for (index_ = 0; dirnames[index_]; index_++)
     {
-      vt_key[0].string = "Rooms";
-      vt_key[1].integer = gs_playerroom (game);
-      vt_key[2].string = "Exits";
-      vt_key[3].integer = index_;
-      if (prop_get (bundle, "I<-sisi", &vt_rvalue, vt_key)
-          && lib_can_go (game, gs_playerroom (game), index_))
+      if (lib_room_exit_available (game, room, index_))
         return TRUE;
     }
   return FALSE;
@@ -1548,64 +1722,50 @@ lib_room_has_exits (scr_gameref_t game)
 
 
 /*
- * lib_cmd_print_room_exits()
+ * lib_print_exits_list()
  *
- * Print a list of exits from the player room.
+ * Print a list of exits from the given room.
  */
-scr_bool
-lib_cmd_print_room_exits (scr_gameref_t game)
+static void
+lib_print_exits_list (scr_gameref_t game, scr_int room)
 {
   const scr_filterref_t filter = gs_get_filter (game);
-  const scr_prop_setref_t bundle = gs_get_bundle (game);
-  scr_vartype_t vt_key[4];
-  scr_bool eightpointcompass;
   const scr_char *const *dirnames;
   scr_int index_;
   lib_list_t list;
 
-  /* Decide on four or eight point compass names list. */
-  vt_key[0].string = "Globals";
-  vt_key[1].string = "EightPointCompass";
-  eightpointcompass = prop_get_boolean (bundle, "B<-ss", vt_key);
-  dirnames = eightpointcompass ? DIRNAMES_8 : DIRNAMES_4;
-
   /* Poll for an exit for each valid direction name. */
+  dirnames = lib_compass_names (game);
   for (index_ = 0; dirnames[index_]; index_++)
     {
-      scr_vartype_t vt_rvalue;
-
-      vt_key[0].string = "Rooms";
-      vt_key[1].integer = gs_playerroom (game);
-      vt_key[2].string = "Exits";
-      vt_key[3].integer = index_;
-      if (prop_get (bundle, "I<-sisi", &vt_rvalue, vt_key)
-          && lib_can_go (game, gs_playerroom (game), index_))
+      if (lib_room_exit_available (game, room, index_))
         list.push_back (index_);
     }
   if (!list.empty ())
     {
-      /* Vary text slightly for DispFirstRoom, and for a lone exit. */
+      /*
+       * Vary text for a lone exit.  SCARE used to print "There is an
+       * exit "/"There are exits " on turn 0, but no Runner version has
+       * that wording at all (run370-run400 binaries carry only " can
+       * only move " and " can move "), and the run400 Goldilocks
+       * transcript says "I can move ..." even in the game-start room
+       * display.
+       */
       if (list.size () == 1)
         {
-          if (game->turns == 0)
-            pf_buffer_string (filter, "There is an exit ");
-          else
-            pf_buffer_string (filter,
-                              lib_select_response (game,
-                                                   "You can only move ",
-                                                   "I can only move ",
-                                                   "%player% can only move "));
+          pf_buffer_string (filter,
+                            lib_select_response (game,
+                                                 "You can only move ",
+                                                 "I can only move ",
+                                                 "%player% can only move "));
         }
       else
         {
-          if (game->turns == 0)
-            pf_buffer_string (filter, "There are exits ");
-          else
-            pf_buffer_string (filter,
-                              lib_select_response (game,
-                                                   "You can move ",
-                                                   "I can move ",
-                                                   "%player% can move "));
+          pf_buffer_string (filter,
+                            lib_select_response (game,
+                                                 "You can move ",
+                                                 "I can move ",
+                                                 "%player% can move "));
         }
       lib_print_name_list (game, list, dirnames, " and ");
       pf_buffer_string (filter, ".\n");
@@ -1618,8 +1778,44 @@ lib_cmd_print_room_exits (scr_gameref_t game)
                                       "I can't go in any direction!\n",
                                       "%player% can't go in any direction!\n"));
     }
+}
 
+
+/*
+ * lib_cmd_print_room_exits()
+ *
+ * Command handler for "exits"; lists exits from the player room.
+ */
+scr_bool
+lib_cmd_print_room_exits (scr_gameref_t game)
+{
+  lib_print_exits_list (game, gs_playerroom (game));
   return TRUE;
+}
+
+
+/*
+ * lib_print_room_exits()
+ *
+ * Append the exits list to a room description if the ShowExits global
+ * requests it.  The run400 room builder itself runs the "exits" command at
+ * the end of every room display when MemVar_4941E9 (ShowExits) is set, and
+ * strips the result again if it ends "any direction!" (@00472BFF-00472C64
+ * in Proc_19_63_472CA4) -- so this applies to task ShowRoomDesc displays
+ * just as much as to player-room ones.
+ */
+void
+lib_print_room_exits (scr_gameref_t game, scr_int room)
+{
+  const scr_filterref_t filter = gs_get_filter (game);
+  const scr_prop_setref_t bundle = gs_get_bundle (game);
+
+  if (prop_get_global_boolean (bundle, "ShowExits")
+      && lib_room_has_exits (game, room))
+    {
+      pf_buffer_character (filter, '\n');
+      lib_print_exits_list (game, room);
+    }
 }
 
 
@@ -1632,10 +1828,6 @@ lib_cmd_print_room_exits (scr_gameref_t game)
 static void
 lib_describe_player_room (scr_gameref_t game, scr_bool force_verbose)
 {
-  const scr_filterref_t filter = gs_get_filter (game);
-  const scr_prop_setref_t bundle = gs_get_bundle (game);
-  scr_vartype_t vt_key[2];
-
   /* Print the room name. */
   lib_print_room_name (game, gs_playerroom (game));
 
@@ -1643,20 +1835,11 @@ lib_describe_player_room (scr_gameref_t game, scr_bool force_verbose)
   if (force_verbose
       || game->verbose || !gs_room_seen (game, gs_playerroom (game)))
     {
-      scr_bool showexits;
-
       /* Print room description, and objects and NPCs. */
       lib_print_room_description (game, gs_playerroom (game));
 
       /* Print exits if the ShowExits global requests it. */
-      vt_key[0].string = "Globals";
-      vt_key[1].string = "ShowExits";
-      showexits = prop_get_boolean (bundle, "B<-ss", vt_key);
-      if (showexits && lib_room_has_exits (game))
-        {
-          pf_buffer_character (filter, '\n');
-          lib_cmd_print_room_exits (game);
-        }
+      lib_print_room_exits (game, gs_playerroom (game));
     }
 }
 
@@ -1763,6 +1946,28 @@ lib_cmd_undo (scr_gameref_t game)
 
 
 /*
+ * lib_format_elapsed_time()
+ *
+ * Format a count of elapsed game seconds as "[Hh ][M]Mm SSs".
+ */
+static void
+lib_format_elapsed_time (scr_int timestamp, scr_char *buffer, size_t length)
+{
+  scr_int hr, min, sec;
+
+  /* Separate the timestamp out into components. */
+  hr = timestamp / SECS_PER_HOUR;
+  min = (timestamp % SECS_PER_HOUR) / MINS_PER_HOUR;
+  sec = timestamp % SECS_PER_MINUTE;
+
+  if (hr > 0)
+    snprintf (buffer, length, "%ldh %02ldm %02lds", hr, min, sec);
+  else
+    snprintf (buffer, length, "%ldm %02lds", min, sec);
+}
+
+
+/*
  * lib_cmd_history_common()
  * lib_cmd_history_number()
  * lib_cmd_history()
@@ -1814,23 +2019,14 @@ lib_cmd_history_common (scr_gameref_t game, scr_int limit)
       memo_next_command (memento, &command, &sequence, &timestamp, &turns);
       if (count >= first)
         {
-          scr_int hr, min, sec;
           scr_char buffer[64];
 
           /* Write the history entry sequence. */
           snprintf (buffer, sizeof(buffer), "%4ld -- Time ", sequence);
           if_print_string (buffer);
 
-          /* Separate the timestamp out into components. */
-          hr = timestamp / SECS_PER_HOUR;
-          min = (timestamp % SECS_PER_HOUR) / MINS_PER_HOUR;
-          sec = timestamp % SECS_PER_MINUTE;
-
           /* Print playing time as "[HHh ][M]Mm SSs". */
-          if (hr > 0)
-            snprintf (buffer, sizeof(buffer), "%ldh %02ldm %02lds", hr, min, sec);
-          else
-            snprintf (buffer, sizeof(buffer), "%ldm %02lds", min, sec);
+          lib_format_elapsed_time (timestamp, buffer, sizeof(buffer));
           if_print_string (buffer);
 
           /* Follow up with the turns count, and the command string itself. */
@@ -2237,13 +2433,11 @@ lib_cmd_information (scr_gameref_t game)
 {
   const scr_prop_setref_t bundle = gs_get_bundle (game);
   const scr_var_setref_t vars = gs_get_vars (game);
-  scr_vartype_t vt_key[2];
+  scr_vartype_t vt_key[1];
   const scr_char *gamename, *compile_date, *gameauthor;
   scr_char *filtered;
 
-  vt_key[0].string = "Globals";
-  vt_key[1].string = "GameName";
-  gamename = prop_get_string (bundle, "S<-ss", vt_key);
+  gamename = prop_get_global_string (bundle, "GameName");
   filtered = pf_filter_for_info (gamename, vars);
   pf_strip_tags (filtered);
 
@@ -2395,20 +2589,15 @@ lib_cmd_wait (scr_gameref_t game)
 {
   const scr_filterref_t filter = gs_get_filter (game);
   const scr_prop_setref_t bundle = gs_get_bundle (game);
-  scr_vartype_t vt_key[2];
   scr_int waitturns;
 
   /* Note if wait turns is different from the game's setting. */
-  vt_key[0].string = "Globals";
-  vt_key[1].string = "WaitTurns";
-  waitturns = prop_get_integer (bundle, "I<-ss", vt_key);
+  waitturns = prop_get_global_integer (bundle, "WaitTurns");
   if (waitturns != game->waitturns)
     {
-      scr_char buffer[32];
 
       pf_buffer_string (filter, "(");
-      snprintf (buffer, sizeof(buffer), "%ld", game->waitturns);
-      pf_buffer_string (filter, buffer);
+      pf_buffer_integer (filter, game->waitturns);
       pf_buffer_string (filter,
                         game->waitturns == 1 ? " turn)\n" : " turns)\n");
     }
@@ -2573,19 +2762,11 @@ scr_bool
 lib_cmd_time (scr_gameref_t game)
 {
   const scr_var_setref_t vars = gs_get_vars (game);
-  scr_uint timestamp;
-  scr_int hr, min, sec;
   scr_char buffer[64];
 
   /* Get elapsed game time and convert to hour, minutes, and seconds. */
-  timestamp = var_get_elapsed_seconds (vars);
-  hr = timestamp / SECS_PER_HOUR;
-  min = (timestamp % SECS_PER_HOUR) / MINS_PER_HOUR;
-  sec = timestamp % SECS_PER_MINUTE;
-  if (hr > 0)
-    snprintf (buffer, sizeof(buffer), "%ldh %02ldm %02lds", hr, min, sec);
-  else
-    snprintf (buffer, sizeof(buffer), "%ldm %02lds", min, sec);
+  lib_format_elapsed_time (var_get_elapsed_seconds (vars), buffer,
+                           sizeof(buffer));
 
   /* Print the game's elapsed time. */
   if_print_string ("You have been running the game for ");
@@ -2641,34 +2822,21 @@ static scr_bool
 lib_go (scr_gameref_t game, scr_int direction)
 {
   const scr_filterref_t filter = gs_get_filter (game);
-  const scr_prop_setref_t bundle = gs_get_bundle (game);
-  scr_vartype_t vt_key[5], vt_rvalue;
-  scr_bool eightpointcompass, is_trapped, is_exitable[12];
+  scr_bool is_trapped, is_exitable[12];
   scr_int destination, index_;
   const scr_char *const *dirnames;
 
   /* Decide on four or eight point compass names list. */
-  vt_key[0].string = "Globals";
-  vt_key[1].string = "EightPointCompass";
-  eightpointcompass = prop_get_boolean (bundle, "B<-ss", vt_key);
-  dirnames = eightpointcompass ? DIRNAMES_8 : DIRNAMES_4;
+  dirnames = lib_compass_names (game);
 
   /* Start by seeing if there are any exits at all available. */
   is_trapped = TRUE;
   for (index_ = 0; dirnames[index_]; index_++)
     {
-      vt_key[0].string = "Rooms";
-      vt_key[1].integer = gs_playerroom (game);
-      vt_key[2].string = "Exits";
-      vt_key[3].integer = index_;
-      if (prop_get (bundle, "I<-sisi", &vt_rvalue, vt_key)
-          && lib_can_go (game, gs_playerroom (game), index_))
-        {
-          is_exitable[index_] = TRUE;
-          is_trapped = FALSE;
-        }
-      else
-        is_exitable[index_] = FALSE;
+      is_exitable[index_] = lib_room_exit_available (game, gs_playerroom (game),
+                                                     index_);
+      if (is_exitable[index_])
+        is_trapped = FALSE;
     }
   if (is_trapped)
     {
@@ -2687,31 +2855,41 @@ lib_go (scr_gameref_t game, scr_int direction)
    * Check for the exit, and if it doesn't exist, refuse, and list the possible
    * options.
    */
-  vt_key[0].string = "Rooms";
-  vt_key[1].integer = gs_playerroom (game);
-  vt_key[2].string = "Exits";
-  vt_key[3].integer = direction;
-  vt_key[4].string = "Dest";
-  if (prop_get (bundle, "I<-sisis", &vt_rvalue, vt_key))
-    destination = vt_rvalue.integer - 1;
-  else
+  if (!lib_room_exit_destination (game, direction, &destination))
     {
       lib_list_t list;
 
       if (lib_movement_probe)
         return FALSE;
 
-      pf_buffer_string (filter,
-                        lib_select_response (game,
-                         "You can't go in that direction, but you can move ",
-                         "I can't go in that direction, but I can move ",
-                         "%player% can't go in that direction, but can move "));
-
       /* List available exits, found in exit test loop earlier. */
       for (index_ = 0; dirnames[index_]; index_++)
         {
           if (is_exitable[index_])
             list.push_back (index_);
+        }
+
+      /*
+       * With exactly one usable exit the Runner prints just " can only
+       * move X.", with no "can't go in that direction" prefix; the prefix
+       * exists only in the several-exits branch (run400 @00474A75 vs
+       * @00474AFB in Proc_19_29_475638).
+       */
+      if (list.size () == 1)
+        {
+          pf_buffer_string (filter,
+                            lib_select_response (game,
+                                                 "You can only move ",
+                                                 "I can only move ",
+                                                 "%player% can only move "));
+        }
+      else
+        {
+          pf_buffer_string (filter,
+                            lib_select_response (game,
+                             "You can't go in that direction, but you can move ",
+                             "I can't go in that direction, but I can move ",
+                             "%player% can't go in that direction, but can move "));
         }
       lib_print_name_list (game, list, dirnames, " and ");
       pf_buffer_string (filter, ".\n");
@@ -2773,6 +2951,29 @@ lib_go (scr_gameref_t game, scr_int direction)
  * lib_cmd_go_*()
  *
  * Direction-specific movement commands.
+ *
+ * `in` also answers to `inside` and `enter`, and `out` to `outside` and
+ * `exit`; the other ten directions have no such alternates.  Every Runner
+ * tests the three- and four-way alternations right where it tests `in` and
+ * `out` themselves, and by equality against the whole command rather than
+ * with c(): run370 loc_434AEA / loc_434C02, run380 loc_43B44D / loc_43B556,
+ * run390 loc_44FDF6 / loc_44FF01, run400 loc_474FEF / loc_4750A4.
+ *
+ * `exit` used to sit in the `exits`/`where`/`directions` row below, which is
+ * only right for a room with no out exit.  A room that has one is left by
+ * `exit`, and where it has none the wording still differs from a real exits
+ * request: the Runner seeds the response of all twenty movement words with
+ * the exits summary before the direction blocks get their chance to overwrite
+ * it (run380 loc_43AA58), and the several-exits form of that seed is prefixed
+ * " can't go in that direction, but" for every word except `exits`, `where`
+ * and `directions` (loc_43AC7E).  That is exactly lib_go()'s own refusal, so
+ * routing `exit` to lib_cmd_go_out() gets both cases right at once.
+ *
+ * `inside` and `outside` are absent from that twenty-word seed list, so in a
+ * room without the matching exit the Runner has nothing to say and drops
+ * through to the catch-all.  We print the exits summary there instead, which
+ * is what lib_go() does for every other direction word; the deviation is
+ * confined to the case where the movement fails.
  */
 scr_bool
 lib_cmd_go_north (scr_gameref_t game)
@@ -2822,6 +3023,45 @@ lib_cmd_go_out (scr_gameref_t game)
   return lib_go (game, DIR_OUT);
 }
 
+/*
+ * lib_cmd_just_a_direction()
+ *
+ * Every Runner ends generaltasks' verb sweep with a pair of branches that
+ * answer anything still containing the whole word `go` or `enter` -- run370
+ * loc_43DD8B / loc_43DDB4, run380 loc_44481C / loc_444845, run390 loc_45DF66
+ * / loc_45DF83, run400 loc_489377 / loc_48938E.  Neither is guarded on the
+ * response line being empty, so they overwrite whatever an earlier branch
+ * had to say; `enter mansion` gets this and not the generic
+ * unknown-verb-with-object reply.  A bare `enter`, `in`, `out` and the rest
+ * never reach it -- those are movement words, handled above.
+ */
+scr_bool
+lib_cmd_just_a_direction (scr_gameref_t game)
+{
+  return lib_print_message (game, "Just a direction will do.\n");
+}
+
+
+/*
+ * lib_cmd_just_a_direction_pre_390()
+ *
+ * `go <somewhere>` only reaches the Runner's gotoplace() from 3.9 on.  In 3.7
+ * and 3.8 the sub is guarded on the whole word `goto`, or on a `go to ` with
+ * an argument, and nothing else (run370 loc_42B994, run380 loc_431B8D); 3.9
+ * and 4.0 relaxed the second half of that test to a bare `go ` prefix (run390
+ * loc_43C764, run400 loc_46494C).  So under the older Runners a `go bedroom`
+ * is not a room request at all -- it reaches no direction and no place, and
+ * generaltasks answers it with the nudge above.
+ */
+scr_bool
+lib_cmd_just_a_direction_pre_390 (scr_gameref_t game)
+{
+  if (prop_get_taf_version (gs_get_bundle (game)) >= TAF_VERSION_390)
+    return FALSE;
+
+  return lib_cmd_just_a_direction (game);
+}
+
 scr_bool
 lib_cmd_go_northeast (scr_gameref_t game)
 {
@@ -2848,6 +3088,30 @@ lib_cmd_go_southwest (scr_gameref_t game)
 
 
 /*
+ * lib_skip_article()
+ *
+ * Bypass any "a"/"an"/"the" prefix on a filtered, normalized room name,
+ * returning the name trimmed of it.
+ */
+static scr_char *
+lib_skip_article (scr_char *name)
+{
+  scr_char *skipped;
+
+  if (scr_compare_word (name, "a", 1))
+    skipped = name + 1;
+  else if (scr_compare_word (name, "an", 2))
+    skipped = name + 2;
+  else if (scr_compare_word (name, "the", 3))
+    skipped = name + 3;
+  else
+    skipped = name;
+
+  return scr_trim_string (skipped);
+}
+
+
+/*
  * lib_compare_rooms()
  *
  * Helper for lib_cmd_go_room().  Compare the name of the passed in room
@@ -2868,15 +3132,7 @@ lib_compare_rooms (scr_gameref_t game, scr_int room, const scr_char *string)
   scr_normalize_string (scr_trim_string (name));
 
   /* Bypass any prefix on the room name. */
-  if (scr_compare_word (name, "a", 1))
-    compare_name = name + 1;
-  else if (scr_compare_word (name, "an", 2))
-    compare_name = name + 2;
-  else if (scr_compare_word (name, "the", 3))
-    compare_name = name + 3;
-  else
-    compare_name = name;
-  scr_trim_string (compare_name);
+  compare_name = lib_skip_article (name);
 
   /* Compare strings, then free the allocated name. */
   status = scr_strcasecmp (compare_name, string) == 0;
@@ -2904,8 +3160,7 @@ lib_cmd_go_room (scr_gameref_t game)
   const scr_filterref_t filter = gs_get_filter (game);
   const scr_var_setref_t vars = gs_get_vars (game);
   const scr_prop_setref_t bundle = gs_get_bundle (game);
-  scr_vartype_t vt_key[5], vt_rvalue;
-  scr_bool eightpointcompass, is_trapped, is_ambiguous;
+  scr_bool is_trapped, is_ambiguous;
   scr_int direction, destination, index_;
   const scr_char *const *dirnames;
   scr_char *name, *compare_name;
@@ -2916,15 +3171,7 @@ lib_cmd_go_room (scr_gameref_t game)
   scr_normalize_string (scr_trim_string (name));
 
   /* Bypass any prefix on the request room name. */
-  if (scr_compare_word (name, "a", 1))
-    compare_name = name + 1;
-  else if (scr_compare_word (name, "an", 2))
-    compare_name = name + 2;
-  else if (scr_compare_word (name, "the", 3))
-    compare_name = name + 3;
-  else
-    compare_name = name;
-  scr_trim_string (compare_name);
+  compare_name = lib_skip_article (name);
 
   /* See if the named room is the current player room. */
   if (lib_compare_rooms (game, gs_playerroom (game), compare_name))
@@ -2935,10 +3182,7 @@ lib_cmd_go_room (scr_gameref_t game)
     }
 
   /* Decide on four or eight point compass names list. */
-  vt_key[0].string = "Globals";
-  vt_key[1].string = "EightPointCompass";
-  eightpointcompass = prop_get_boolean (bundle, "B<-ss", vt_key);
-  dirnames = eightpointcompass ? DIRNAMES_8 : DIRNAMES_4;
+  dirnames = lib_compass_names (game);
 
   /* Search adjacent and available rooms for a name match. */
   is_trapped = TRUE;
@@ -2947,12 +3191,9 @@ lib_cmd_go_room (scr_gameref_t game)
   destination = -1;
   for (index_ = 0; dirnames[index_]; index_++)
     {
-      vt_key[0].string = "Rooms";
-      vt_key[1].integer = gs_playerroom (game);
-      vt_key[2].string = "Exits";
-      vt_key[3].integer = index_;
-      if (prop_get (bundle, "I<-sisi", &vt_rvalue, vt_key)
-          && lib_can_go (game, gs_playerroom (game), index_))
+      scr_int location;
+
+      if (lib_room_exit_available (game, gs_playerroom (game), index_))
         {
           is_trapped = FALSE;
 
@@ -2962,20 +3203,14 @@ lib_cmd_go_room (scr_gameref_t game)
            * rooms are reachable by multiple directions, such as both "south"
            * and "out").
            */
-          vt_key[4].string = "Dest";
-          if (prop_get (bundle, "I<-sisis", &vt_rvalue, vt_key))
+          if (lib_room_exit_destination (game, index_, &location)
+              && location != destination
+              && lib_compare_rooms (game, location, compare_name))
             {
-              scr_int location;
-
-              location = vt_rvalue.integer - 1;
-              if (location != destination
-                  && lib_compare_rooms (game, location, compare_name))
-                {
-                  if (direction != -1)
-                    is_ambiguous = TRUE;
-                  direction = index_;
-                  destination = location;
-                }
+              if (direction != -1)
+                is_ambiguous = TRUE;
+              direction = index_;
+              destination = location;
             }
         }
     }
@@ -3206,7 +3441,6 @@ lib_disambiguate_npc (scr_gameref_t game,
 /*
  * lib_disambiguate_object_common()
  * lib_disambiguate_object()
- * lib_disambiguate_object_extended()
  *
  * Filter, then search the set of object matches.  If only one matched, note
  * and return it.  If multiple matched, print a disambiguation message and
@@ -3214,11 +3448,10 @@ lib_disambiguate_npc (scr_gameref_t game,
  * -1 with *is_ambiguous FALSE if requested, otherwise print a message then
  * return -1.
  *
- * Extended disambiguation operates as normal disambiguation, except that if
- * normal disambiguation returns more than one object, the resolver function,
- * if supplied, is used to see if the multiple objects can be resolved into
- * just one object.  The resolver function can normally be the same as the
- * function used to filter objects for multiple references.
+ * If normal disambiguation returns more than one object, the resolver
+ * function, if supplied, is used to see if the multiple objects can be
+ * resolved into just one object.  The resolver function can normally be the
+ * same as the function used to filter objects for multiple references.
  */
 static scr_int
 lib_disambiguate_object_common (scr_gameref_t game, const scr_char *verb,
@@ -3229,19 +3462,21 @@ lib_disambiguate_object_common (scr_gameref_t game, const scr_char *verb,
 {
   const scr_filterref_t filter = gs_get_filter (game);
   const scr_var_setref_t vars = gs_get_vars (game);
+  const scr_bool requires_seen = lib_matcher_requires_seen (game);
   scr_int count, index_, object, listed;
 
   /*
    * Filter out all referenced objects not actually visible or seen.  Count
    * the number of objects remaining as referenced by the last command, and
-   * note the last referenced object, for where count is 1.
+   * note the last referenced object, for where count is 1.  Version 3.8
+   * games skip the seen test -- see lib_matcher_requires_seen().
    */
   count = 0;
   object = -1;
   for (index_ = 0; index_ < gs_object_count (game); index_++)
     {
       if (game->object_references[index_]
-          && gs_object_seen (game, index_)
+          && (!requires_seen || gs_object_seen (game, index_))
           && obj_indirectly_in_room (game, index_, gs_playerroom (game)))
         {
           count++;
@@ -3364,17 +3599,6 @@ lib_disambiguate_object (scr_gameref_t game,
   return lib_disambiguate_object_common (game, verb, NULL, -1, is_ambiguous);
 }
 
-static scr_int
-lib_disambiguate_object_extended (scr_gameref_t game, const scr_char *verb,
-                                  scr_bool (*resolver)
-                                      (scr_gameref_t, scr_int, scr_int),
-                                  scr_int resolver_arg,
-                                  scr_bool *is_ambiguous)
-{
-  return lib_disambiguate_object_common (game, verb,
-                                         resolver, resolver_arg, is_ambiguous);
-}
-
 
 /*
  * lib_list_npc_inventory()
@@ -3389,12 +3613,19 @@ lib_list_npc_inventory (scr_gameref_t game, scr_int npc, scr_bool is_described)
   scr_bool wearing;
   lib_list_t list;
 
-  /* Find and list each object worn by the NPC. */
+  /*
+   * Find and list each object worn by the NPC.  Like container listings,
+   * this reveals the objects -- the Runner marks NPC possessions seen
+   * only when they're listed to the player.
+   */
   for (object = 0; object < gs_object_count (game); object++)
     {
       if (gs_object_position (game, object) == OBJ_WORN_NPC
           && gs_object_parent (game, object) == npc)
-        list.push_back (object);
+        {
+          list.push_back (object);
+          gs_set_object_seen (game, object, TRUE);
+        }
     }
   wearing = !list.empty ();
   if (wearing)
@@ -3411,7 +3642,10 @@ lib_list_npc_inventory (scr_gameref_t game, scr_int npc, scr_bool is_described)
     {
       if (gs_object_position (game, object) == OBJ_HELD_NPC
           && gs_object_parent (game, object) == npc)
-        list.push_back (object);
+        {
+          list.push_back (object);
+          gs_set_object_seen (game, object, TRUE);
+        }
     }
   if (!list.empty ())
     {
@@ -3617,15 +3851,21 @@ lib_list_in_object (scr_gameref_t game, scr_int container, scr_bool is_described
   scr_bool use_alternate_format = FALSE;
   scr_int object, count;
 
-  /* Count the objects this container holds. */
+  /*
+   * Count the objects this container holds.  Listing a container's
+   * contents is also what reveals them: the Runner sets each listed
+   * object's seen flag here, and until then the object can't be referred
+   * to at all (in version 3.9 and later games).
+   */
   count = 0;
   for (object = 0; object < gs_object_count (game); object++)
     {
       if (gs_object_position (game, object) == OBJ_IN_OBJECT
           && gs_object_parent (game, object) == container)
-        count++;
-      if (count > 2)
-        break;
+        {
+          count++;
+          gs_set_object_seen (game, object, TRUE);
+        }
     }
 
   if (count == 1 || count == 2)
@@ -3642,12 +3882,51 @@ lib_list_in_object (scr_gameref_t game, scr_int container, scr_bool is_described
 
 
 /*
- * lib_list_on_object()
+ * lib_list_on_object_normal()
  *
- * List the objects on a given surface object.
+ * List the objects on a given surface object, normal format listing.
  */
 static scr_bool
-lib_list_on_object (scr_gameref_t game, scr_int supporter, scr_bool is_described)
+lib_list_on_object_normal (scr_gameref_t game,
+                           scr_int supporter, scr_bool is_described)
+{
+  const scr_filterref_t filter = gs_get_filter (game);
+  scr_int object;
+  lib_list_t list;
+
+  /* List out the objects standing on this surface. */
+  for (object = 0; object < gs_object_count (game); object++)
+    {
+      /* Standing on? */
+      if (gs_object_position (game, object) == OBJ_ON_OBJECT
+          && gs_object_parent (game, object) == supporter)
+        list.push_back (object);
+    }
+  if (!list.empty ())
+    {
+      if (is_described)
+        pf_buffer_string (filter, "  ");
+      pf_buffer_string (filter, "On ");
+      lib_print_object_np (game, supporter);
+      pf_buffer_string (filter,
+                        lib_select_plurality (game, list[0], " is ", " are "));
+      lib_print_list (game, list, lib_print_object, " and ");
+      pf_buffer_character (filter, '.');
+    }
+
+  /* Return TRUE if anything listed. */
+  return !list.empty ();
+}
+
+
+/*
+ * lib_list_on_object_alternate()
+ *
+ * List the objects on a given surface object, alternate format listing.
+ */
+static scr_bool
+lib_list_on_object_alternate (scr_gameref_t game,
+                              scr_int supporter, scr_bool is_described)
 {
   const scr_filterref_t filter = gs_get_filter (game);
   scr_int object;
@@ -3678,6 +3957,56 @@ lib_list_on_object (scr_gameref_t game, scr_int supporter, scr_bool is_described
 
   /* Return TRUE if anything listed. */
   return !list.empty ();
+}
+
+
+/*
+ * lib_list_on_object()
+ *
+ * List the objects on a given surface object.
+ *
+ * The Runner picks between the same two styles it uses for containers, on
+ * the same rule: one or two objects get the alternate (postfixed) format,
+ * three or more the normal (prefixed) one -- see lib_list_in_object() for
+ * the run400 derivation.  SCARE used the postfixed format unconditionally
+ * for surfaces.  Both halves are visible in the Professor Von Witt
+ * walkthrough transcript (Runner 4.00, 2026-08-18): "On the shelves is a
+ * leg to stand on, a handy dandy extra hand, the sloppy jalopy, a portable
+ * doorknob and a pollen popper upper." (5 objects) against "A container of
+ * Reggie's Remedy Rust Resolvent is on the shelves." (1 object).
+ */
+static scr_bool
+lib_list_on_object (scr_gameref_t game, scr_int supporter, scr_bool is_described)
+{
+  scr_bool use_alternate_format = FALSE;
+  scr_int object, count;
+
+  /*
+   * Count the objects this surface holds, marking each one seen as we
+   * go -- as with containers, the listing is what reveals the contents
+   * to the parser.
+   */
+  count = 0;
+  for (object = 0; object < gs_object_count (game); object++)
+    {
+      if (gs_object_position (game, object) == OBJ_ON_OBJECT
+          && gs_object_parent (game, object) == supporter)
+        {
+          count++;
+          gs_set_object_seen (game, object, TRUE);
+        }
+    }
+
+  if (count == 1 || count == 2)
+    use_alternate_format = TRUE;
+  else if (obj_is_static (game, supporter)
+           && gs_object_position (game, supporter) == OBJ_PART_NPC)
+    use_alternate_format = TRUE;
+
+  /* List objects on the surface using the selected handler. */
+  return use_alternate_format
+         ? lib_list_on_object_alternate (game, supporter, is_described)
+         : lib_list_on_object_normal (game, supporter, is_described);
 }
 
 
@@ -3748,6 +4077,12 @@ lib_cmd_examine_object (scr_gameref_t game)
   object = lib_disambiguate_object (game, "examine", &is_ambiguous);
   if (object == -1)
     return is_ambiguous;
+
+  /*
+   * Examining an object marks it seen.  This can matter in version 3.8
+   * games, where the matcher doesn't require objects to have been seen.
+   */
+  gs_set_object_seen (game, object, TRUE);
 
   /* Begin assuming no description printed. */
   is_described = FALSE;
@@ -4113,9 +4448,9 @@ lib_parse_next_object (scr_gameref_t game, const scr_char *verb,
 
   /* If we extracted an object from referenced text, disambiguate. */
   if (is_matched)
-    *object = lib_disambiguate_object_extended (game, verb,
-                                                resolver, resolver_arg,
-                                                is_ambiguous);
+    *object = lib_disambiguate_object_common (game, verb,
+                                              resolver, resolver_arg,
+                                              is_ambiguous);
   else
     *is_ambiguous = FALSE;
 
@@ -4364,6 +4699,54 @@ lib_carried_burden (scr_gameref_t game)
 
 
 /*
+ * lib_carried_size()
+ * lib_carried_weight()
+ *
+ * The player's current carried size and weight as the capacity checks see
+ * them.  By default this is the Runner's running total (gs_carried_*, with
+ * its take/drop double-count); in legacy mode it is recomputed afresh from
+ * currently held or worn objects.
+ */
+static scr_int
+lib_carried_size (scr_gameref_t game)
+{
+  scr_int index_, size;
+
+  if (!game->capacity_recompute)
+    return gs_carried_size (game);
+
+  size = 0;
+  for (index_ = 0; index_ < gs_object_count (game); index_++)
+    {
+      if (gs_object_position (game, index_) == OBJ_HELD_PLAYER
+          || gs_object_position (game, index_) == OBJ_WORN_PLAYER)
+        size += obj_get_size (game, index_);
+    }
+
+  return size;
+}
+
+static scr_int
+lib_carried_weight (scr_gameref_t game)
+{
+  scr_int index_, weight;
+
+  if (!game->capacity_recompute)
+    return gs_carried_weight (game);
+
+  weight = 0;
+  for (index_ = 0; index_ < gs_object_count (game); index_++)
+    {
+      if (gs_object_position (game, index_) == OBJ_HELD_PLAYER
+          || gs_object_position (game, index_) == OBJ_WORN_PLAYER)
+        weight += obj_get_weight (game, index_);
+    }
+
+  return weight;
+}
+
+
+/*
  * lib_cmd_count()
  *
  * Display player weight and size limits and amounts currently carried.
@@ -4373,7 +4756,6 @@ lib_cmd_count (scr_gameref_t game)
 {
   const scr_filterref_t filter = gs_get_filter (game);
   scr_int size, weight;
-  scr_char buffer[32];
 
   /*
    * A version 3.8 game has neither of these axes -- report the one pooled
@@ -4381,59 +4763,57 @@ lib_cmd_count (scr_gameref_t game)
    */
   if (obj_uses_burden_model (game))
     {
-      pf_buffer_string (filter, "Burden:  You have ");
-      snprintf (buffer, sizeof(buffer), "%ld", lib_carried_burden (game));
-      pf_buffer_string (filter, buffer);
-      pf_buffer_string (filter, ".  The most you can hold is ");
-      snprintf (buffer, sizeof(buffer), "%ld",
-                obj_get_player_burden_limit (game));
-      pf_buffer_string (filter, buffer);
+      pf_buffer_string (filter, "Burden:\t");
+      pf_buffer_string (filter,
+                        lib_select_response (game, "You have ", "I have ",
+                                             "%player% has "));
+      pf_buffer_integer (filter, lib_carried_burden (game));
+      pf_buffer_string (filter,
+                        lib_select_response (game,
+                                             ".  The most you can hold is ",
+                                             ".  The most I can hold is ",
+                                             ".  The most %player% can hold is "));
+      pf_buffer_integer (filter, obj_get_player_burden_limit (game));
       pf_buffer_string (filter, ".\n");
 
       game->is_admin = TRUE;
       return TRUE;
     }
 
+  /* Report the same carried totals the capacity checks use. */
+  size = lib_carried_size (game);
+  weight = lib_carried_weight (game);
+
   /*
-   * Report the same carried totals the capacity checks use: the running totals
-   * by default, or a fresh recompute from held/worn objects in legacy mode.
+   * Print the player limits and amounts used, in the Runner's own layout --
+   * a tab stop after each label (two tabs for the shorter "Size:") and the
+   * game's perspective for the pronouns: "Size:\t\tI have 0.  The most I
+   * can hold is 108." (run400, goldilocks/iachini transcripts 2026-08-22).
    */
-  if (game->capacity_recompute)
-    {
-      scr_int index_;
-
-      size = weight = 0;
-      for (index_ = 0; index_ < gs_object_count (game); index_++)
-        {
-          if (gs_object_position (game, index_) == OBJ_HELD_PLAYER
-              || gs_object_position (game, index_) == OBJ_WORN_PLAYER)
-            {
-              size += obj_get_size (game, index_);
-              weight += obj_get_weight (game, index_);
-            }
-        }
-    }
-  else
-    {
-      size = gs_carried_size (game);
-      weight = gs_carried_weight (game);
-    }
-
-  /* Print the player limits and amounts used. */
-  pf_buffer_string (filter, "Size:    You have ");
-  snprintf (buffer, sizeof(buffer), "%ld", size);
-  pf_buffer_string (filter, buffer);
-  pf_buffer_string (filter, ".  The most you can hold is ");
-  snprintf (buffer, sizeof(buffer), "%ld", obj_get_player_size_limit (game));
-  pf_buffer_string (filter, buffer);
+  pf_buffer_string (filter, "Size:\t\t");
+  pf_buffer_string (filter,
+                    lib_select_response (game, "You have ", "I have ",
+                                         "%player% has "));
+  pf_buffer_integer (filter, size);
+  pf_buffer_string (filter,
+                    lib_select_response (game,
+                                         ".  The most you can hold is ",
+                                         ".  The most I can hold is ",
+                                         ".  The most %player% can hold is "));
+  pf_buffer_integer (filter, obj_get_player_size_limit (game));
   pf_buffer_string (filter, ".\n");
 
-  pf_buffer_string (filter, "Weight:  You have ");
-  snprintf (buffer, sizeof(buffer), "%ld", weight);
-  pf_buffer_string (filter, buffer);
-  pf_buffer_string (filter, ".  The most you can hold is ");
-  snprintf (buffer, sizeof(buffer), "%ld", obj_get_player_weight_limit (game));
-  pf_buffer_string (filter, buffer);
+  pf_buffer_string (filter, "Weight:\t");
+  pf_buffer_string (filter,
+                    lib_select_response (game, "You have ", "I have ",
+                                         "%player% has "));
+  pf_buffer_integer (filter, weight);
+  pf_buffer_string (filter,
+                    lib_select_response (game,
+                                         ".  The most you can hold is ",
+                                         ".  The most I can hold is ",
+                                         ".  The most %player% can hold is "));
+  pf_buffer_integer (filter, obj_get_player_weight_limit (game));
   pf_buffer_string (filter, ".\n");
 
   game->is_admin = TRUE;
@@ -4467,25 +4847,8 @@ lib_object_too_heavy (scr_gameref_t game, scr_int object, scr_bool *is_portable)
   player_limit = obj_get_player_weight_limit (game);
   object_weight = obj_get_weight (game, object);
 
-  /*
-   * Establish the player's current carried weight.  By default this is the
-   * Runner's running total (gs_carried_weight, with its take/drop double-count);
-   * in legacy mode it is recomputed afresh from currently held or worn objects.
-   */
-  if (game->capacity_recompute)
-    {
-      scr_int index_;
-
-      weight = 0;
-      for (index_ = 0; index_ < gs_object_count (game); index_++)
-        {
-          if (gs_object_position (game, index_) == OBJ_HELD_PLAYER
-              || gs_object_position (game, index_) == OBJ_WORN_PLAYER)
-            weight += obj_get_weight (game, index_);
-        }
-    }
-  else
-    weight = gs_carried_weight (game);
+  /* Establish the player's current carried weight. */
+  weight = lib_carried_weight (game);
 
   /* If requested, return object portability. */
   if (is_portable)
@@ -4534,24 +4897,8 @@ lib_object_too_large (scr_gameref_t game, scr_int object, scr_bool *is_portable)
   player_limit = obj_get_player_size_limit (game);
   object_size = obj_get_size (game, object);
 
-  /*
-   * Current carried size: the running total by default, or a fresh recompute
-   * from held/worn objects in legacy mode (see lib_object_too_heavy).
-   */
-  if (game->capacity_recompute)
-    {
-      scr_int index_;
-
-      size = 0;
-      for (index_ = 0; index_ < gs_object_count (game); index_++)
-        {
-          if (gs_object_position (game, index_) == OBJ_HELD_PLAYER
-              || gs_object_position (game, index_) == OBJ_WORN_PLAYER)
-            size += obj_get_size (game, index_);
-        }
-    }
-  else
-    size = gs_carried_size (game);
+  /* Establish the player's current carried size. */
+  size = lib_carried_size (game);
 
   /* If requested, return object portability. */
   if (is_portable)
@@ -4595,26 +4942,38 @@ lib_cmd_take_npc (scr_gameref_t game)
  * Objects to action are flagged in object_references; objects requested but
  * deemed not actionable are flagged in multiple_references.
  */
+
+/* Set when the take command named exactly one object; cleared by the
+   backend.  Selects the single-take "already carrying" refusal wording. */
+static scr_bool lib_take_single_named = FALSE;
+
+/* Set when a "take from <object>" command named exactly one object; cleared
+   by the backend.  Only that single-named form echoes the taken object's
+   raw prefix in pre-4.0 games (see the wording comment in the backend). */
+static scr_bool lib_take_from_single_named = FALSE;
+
 static void
 lib_take_backend_common (scr_gameref_t game, scr_int associate,
                          scr_bool is_associate_object, scr_bool is_associate_npc)
 {
   const scr_filterref_t filter = gs_get_filter (game);
   scr_int object_count, object, total, npc;
-  scr_int too_heavy, too_large;
-  scr_bool too_heavy_portable, too_large_portable, has_printed;
+  scr_bool has_printed;
   lib_list_t list;
+  /*
+   * Objects that would take the player over capacity, in the order they
+   * were encountered.  The Runner's multi-take loop appends a separate
+   * "<Name> is too heavy for me to carry at the moment."/" hands are full."
+   * sentence for every such object (run400 @0047C127/@0047C0F0), not just
+   * the first.
+   */
+  lib_list_t over_capacity, over_is_size, over_is_portable;
   assert (!is_associate_object || !is_associate_npc);
-
-  /* Initialize our notions of anything exceeding player capacity. */
-  too_heavy_portable = too_large_portable = FALSE;
-  too_large = too_heavy = -1;
 
   /*
    * Try game commands for all referenced objects first.  If any succeed,
    * remove that reference from the list.  At the same time, filter out and
-   * flag any object that takes us over the player's capacity.  We report
-   * only the first.
+   * flag any object that takes us over the player's capacity.
    */
   has_printed = FALSE;
   object_count = gs_object_count (game);
@@ -4642,21 +5001,17 @@ lib_take_backend_common (scr_gameref_t game, scr_int associate,
            */
           if (lib_object_too_heavy (game, object, &is_portable))
             {
-              if (too_heavy == -1)
-                {
-                  too_heavy = object;
-                  too_heavy_portable = is_portable;
-                }
+              over_capacity.push_back (object);
+              over_is_size.push_back (FALSE);
+              over_is_portable.push_back (is_portable);
               game->object_references[object] = FALSE;
               continue;
             }
           if (lib_object_too_large (game, object, &is_portable))
             {
-              if (too_large == -1)
-                {
-                  too_large = object;
-                  too_large_portable = is_portable;
-                }
+              over_capacity.push_back (object);
+              over_is_size.push_back (TRUE);
+              over_is_portable.push_back (is_portable);
               game->object_references[object] = FALSE;
               continue;
             }
@@ -4740,20 +5095,16 @@ lib_take_backend_common (scr_gameref_t game, scr_int associate,
                 {
                   if (lib_object_too_heavy (game, object, &is_portable))
                     {
-                      if (too_heavy == -1)
-                        {
-                          too_heavy = object;
-                          too_heavy_portable = is_portable;
-                        }
+                      over_capacity.push_back (object);
+                      over_is_size.push_back (FALSE);
+                      over_is_portable.push_back (is_portable);
                       continue;
                     }
                   if (lib_object_too_large (game, object, &is_portable))
                     {
-                      if (too_large == -1)
-                        {
-                          too_large = object;
-                          too_large_portable = is_portable;
-                        }
+                      over_capacity.push_back (object);
+                      over_is_size.push_back (TRUE);
+                      over_is_portable.push_back (is_portable);
                       continue;
                     }
                 }
@@ -4785,6 +5136,19 @@ lib_take_backend_common (scr_gameref_t game, scr_int associate,
                * clothes.", run400 "You take the small pistol from the aluminum
                * clothes."  Only the pistol's own prefix moves at 4.0; the
                * clothes move at 3.9, which is the "some" rule, not this one.
+               *
+               * The raw pre-4.0 prefix belongs to the Runner's SINGLE-take
+               * handler only -- any take that named exactly one object,
+               * with or without an explicit "from" clause (the pistol probe
+               * above was a bare `take gun`).  The multi-take loop
+               * normalizes in every version: run390 on ALEXIS ("a"-prefixed
+               * diary) answers `take diary from table` with "You take a
+               * diary from the old oak table." but `take diary and cloak
+               * from table` with "You take the diary and the woven cloak
+               * from the old oak table." and `get all from table` with "You
+               * take the diary, the brass lantern, the woven cloak and the
+               * nice food from the old oak table."  (Adrift_8.txt, measured
+               * live 2026-08-22.)
                */
               if (parent == -1)
                 pf_buffer_string (filter,
@@ -4805,6 +5169,8 @@ lib_take_backend_common (scr_gameref_t game, scr_int associate,
                                                        "%player% takes "));
               lib_print_list (game, list,
                               parent == -1 || lib_is_version_400 (game)
+                              || !(lib_take_single_named
+                                   || lib_take_from_single_named)
                               ? lib_print_object_np : lib_print_object,
                               " and ");
               if (parent != -1)
@@ -4821,36 +5187,49 @@ lib_take_backend_common (scr_gameref_t game, scr_int associate,
 
   /*
    * If we ran out of capacity, either in weight or in size, print the
-   * details.  Note that we currently only report the first object of any
-   * type to go over capacity.
+   * details.  Each over-weight object gets its own sentence, in the order
+   * encountered; a "hands are full" size refusal is printed at most once.
    */
-  if (too_heavy != -1)
-    {
-      lib_new_clause (game, has_printed);
-      lib_print_object_np (game, too_heavy);
-      pf_buffer_string (filter,
-                        lib_select_plurality (game, too_heavy, " is", " are"));
-      pf_buffer_string (filter,
-                        lib_select_response (game,
-                                           " too heavy for you to carry",
-                                           " too heavy for me to carry",
-                                           " too heavy for %player% to carry"));
-      if (too_heavy_portable)
-        pf_buffer_string (filter, " at the moment");
-      pf_buffer_character (filter, '.');
-      has_printed |= TRUE;
-    }
-  else if (too_large != -1)
-    {
-      lib_print_clause (game, has_printed,
-                        "Your hands are full",
-                        "My hands are full",
-                        "%player%'s hands are full");
-      if (too_large_portable)
-        pf_buffer_string (filter, " at the moment");
-      pf_buffer_character (filter, '.');
-      has_printed |= TRUE;
-    }
+  {
+    scr_bool size_reported;
+    size_t over;
+
+    size_reported = FALSE;
+    for (over = 0; over < over_capacity.size (); over++)
+      {
+        if (over_is_size[over])
+          {
+            if (size_reported)
+              continue;
+            size_reported = TRUE;
+
+            lib_print_clause (game, has_printed,
+                              "Your hands are full",
+                              "My hands are full",
+                              "%player%'s hands are full");
+            if (over_is_portable[over])
+              pf_buffer_string (filter, " at the moment");
+            pf_buffer_character (filter, '.');
+          }
+        else
+          {
+            lib_new_clause (game, has_printed);
+            lib_print_object_np (game, over_capacity[over]);
+            pf_buffer_string (filter,
+                              lib_select_plurality (game, over_capacity[over],
+                                                    " is", " are"));
+            pf_buffer_string (filter,
+                              lib_select_response (game,
+                                       " too heavy for you to carry",
+                                       " too heavy for me to carry",
+                                       " too heavy for %player% to carry"));
+            if (over_is_portable[over])
+              pf_buffer_string (filter, " at the moment");
+            pf_buffer_character (filter, '.');
+          }
+        has_printed |= TRUE;
+      }
+  }
 
   /*
    * Note any remaining multiple references left out of the take operation.
@@ -4959,10 +5338,29 @@ lib_take_backend_common (scr_gameref_t game, scr_int associate,
       game->multiple_references[object] = FALSE;
     }
 
-  has_printed |= lib_print_object_list (game, has_printed, list, " and ", '!',
-                                        "You've already got ",
-                                        "I've already got ",
-                                        "%player% already has ");
+  /*
+   * A take that named a single object uses the Runner's single-take
+   * handler, which words the held-object refusal "I am already carrying
+   * <object>." (run400 @00462D25); "'ve already got <object>!" is the
+   * multi-take processor's wording (run400 @0047BE1B).
+   */
+  if (lib_take_single_named && list.size () == 1)
+    {
+      lib_new_clause (game, has_printed);
+      pf_buffer_string (filter,
+                        lib_select_response (game,
+                                             "You are already carrying ",
+                                             "I am already carrying ",
+                                             "%player% is already carrying "));
+      lib_print_object_np (game, list[0]);
+      pf_buffer_character (filter, '.');
+      has_printed |= TRUE;
+    }
+  else
+    has_printed |= lib_print_object_list (game, has_printed, list, " and ", '!',
+                                          "You've already got ",
+                                          "I've already got ",
+                                          "%player% already has ");
 
   list.clear ();
   for (object = 0; object < object_count; object++)
@@ -5029,6 +5427,9 @@ lib_take_backend_common (scr_gameref_t game, scr_int associate,
                          "You can't take ",
                          "I can't take ",
                          "%player% can't take ");
+
+  lib_take_single_named = FALSE;
+  lib_take_from_single_named = FALSE;
 }
 
 
@@ -5071,13 +5472,13 @@ lib_take_filter (scr_gameref_t game, scr_int object, scr_int unused)
   assert (unused == -1);
 
   /*
-   * To be take-able, an object must be visible in the room, not static,
-   * and not already held or worn by the player or an NPC.  Note that
-   * obj_indirectly_in_room() recurses only through open containers and
-   * surfaces, so this naturally includes objects inside an open container
-   * (or on a surface) present in the room -- "take all" pulls them out, as
-   * the ADRIFT runner does -- while excluding the contents of closed
-   * containers.
+   * To be take-able by name, an object must be visible in the room, not
+   * static, and not already held or worn by the player or an NPC.  Note
+   * that obj_indirectly_in_room() recurses only through open containers
+   * and surfaces, so a named take (or "take X and Y") reaches objects
+   * inside an open container or on a surface present in the room -- the
+   * Runners' "and"-list take mode does the same -- while excluding the
+   * contents of closed containers.
    */
   return obj_indirectly_in_room (game, object, gs_playerroom (game))
          && !obj_is_static (game, object)
@@ -5091,20 +5492,31 @@ lib_take_filter (scr_gameref_t game, scr_int object, scr_int unused)
 /*
  * lib_take_all_filter()
  *
- * The universe that "all" ranges over, which is narrower than the set of
- * objects a named take can reach: the Runner's "all" leaves alone anything
- * already in the player's possession, including the contents of an open
- * container being carried.  In Ticket to No Where, holding the open bag of
+ * The universe that "all" ranges over, which is much narrower than the set
+ * a named take can reach: every Runner builds the "all" candidate list from
+ * dynamic objects lying directly on the floor of the player's room (run380
+ * takes() requires location == current room and static == 0; run400's take
+ * handler, Proc_19_6, does the same plus a seen test).  Objects inside or
+ * on top of other objects are never included, even when the container is
+ * open and its contents revealed -- only naming them, or "take all from X",
+ * reaches inside.  A direct consequence is that "all" also leaves alone
+ * anything already in the player's possession, including the contents of a
+ * carried open container: in Ticket to No Where, holding the open bag of
  * shopping and typing "get all" answers "You take the pamphlet." and leaves
  * the tights, pet food, deodorant and gloves in the bag, while "get paper"
- * still lifts the scrap of paper out of the carried wallet.  Both verified
- * live against run400.exe, 2026-08-02.
+ * still lifts the scrap of paper out of the carried wallet (verified live
+ * against run400.exe, 2026-08-02).
+ *
+ * The seen test needs no explicit port here: a dynamic object directly in
+ * the player's room is marked seen by obj_turn_update() every turn.
  */
 static scr_bool
 lib_take_all_filter (scr_gameref_t game, scr_int object, scr_int unused)
 {
-  return lib_take_filter (game, object, unused)
-         && !obj_indirectly_held_by_player (game, object);
+  assert (unused == -1);
+
+  return !obj_is_static (game, object)
+         && gs_object_position (game, object) == gs_playerroom (game) + 1;
 }
 
 
@@ -5165,6 +5577,9 @@ lib_take_multiple_common (scr_gameref_t game, scr_bool is_except)
   else if (references == 0)
     return TRUE;
 
+  /* Note single-object takes; the backend words some refusals differently. */
+  lib_take_single_named = !is_except && references == 1;
+
   /* Filter objects into references, then handle with the backend. */
   objects = lib_apply_filter (game,
                               resolver, -1, is_except,
@@ -5187,6 +5602,7 @@ lib_take_multiple_common (scr_gameref_t game, scr_bool is_except)
         pf_buffer_string (filter, " else");
       pf_buffer_string (filter, " to pick up here.");
     }
+  lib_take_single_named = FALSE;
 
   pf_buffer_character (filter, '\n');
   return TRUE;
@@ -5223,12 +5639,78 @@ lib_take_from_filter (scr_gameref_t game, scr_int object, scr_int associate)
 {
   /*
    * To be take-able, an object must be either inside or on the specified
-   * object.
+   * object, and -- like every other object match in 3.9/4.0 games -- the
+   * player must have seen it.  "get all from" a container whose contents
+   * are still unrevealed takes nothing (run400, measured live in iachini
+   * 2026-08-22: the dining room table's card and towel need "x table"
+   * first); lib_take_from_unseen() supplies the refusal for that case.
    */
   return (gs_object_position (game, object) == OBJ_IN_OBJECT
           || gs_object_position (game, object) == OBJ_ON_OBJECT)
          && !obj_is_static (game, object)
-         && gs_object_parent (game, object) == associate;
+         && gs_object_parent (game, object) == associate
+         && (!lib_matcher_requires_seen (game)
+             || gs_object_seen (game, object));
+}
+
+
+/*
+ * lib_take_from_unseen()
+ *
+ * TRUE if the associate physically holds takeable objects that the filter
+ * rejected only because the player hasn't seen them yet.  The Runner
+ * refuses "get all from" outright in that case rather than calling the
+ * container empty.
+ */
+static scr_bool
+lib_take_from_unseen (scr_gameref_t game, scr_int associate)
+{
+  scr_int object;
+
+  if (!lib_matcher_requires_seen (game))
+    return FALSE;
+
+  for (object = 0; object < gs_object_count (game); object++)
+    {
+      if ((gs_object_position (game, object) == OBJ_IN_OBJECT
+           || gs_object_position (game, object) == OBJ_ON_OBJECT)
+          && !obj_is_static (game, object)
+          && gs_object_parent (game, object) == associate
+          && !gs_object_seen (game, object))
+        return TRUE;
+    }
+  return FALSE;
+}
+
+
+/*
+ * lib_take_from_unseen_refusal()
+ *
+ * Response for "get all from" a container or supporter whose contents the
+ * player hasn't seen yet.  4.0 refuses outright: run400 answers "You can't
+ * take anything from the round glass table." (iachini, measured live
+ * 2026-08-22).  Pre-4.0 runs its normal take loop over an empty match and
+ * prints just the bare verb phrase: run390 on ALEXIS answers `get all from
+ * table` with "You take " -- trailing space, no object list, no period
+ * (Adrift_8.txt, measured live 2026-08-22).
+ */
+static void
+lib_take_from_unseen_refusal (scr_gameref_t game, scr_int associate)
+{
+  const scr_filterref_t filter = gs_get_filter (game);
+
+  if (lib_is_version_400 (game))
+    lib_print_response_object (game,
+                               "You can't take anything from ",
+                               "I can't take anything from ",
+                               "%player% can't take anything from ",
+                               associate, ".");
+  else
+    pf_buffer_string (filter,
+                      lib_select_response (game,
+                                           "You take ",
+                                           "I take ",
+                                           "%player% takes "));
 }
 
 
@@ -5372,8 +5854,11 @@ lib_cmd_take_all_from (scr_gameref_t game)
   objects = lib_apply_filter (game,
                               lib_take_from_filter, associate, FALSE, NULL);
   gs_clear_multiple_references (game);
+  lib_take_from_single_named = FALSE;
   if (objects > 0)
     lib_take_from_object_backend (game, associate);
+  else if (lib_take_from_unseen (game, associate))
+    lib_take_from_unseen_refusal (game, associate);
   else
     lib_take_from_empty (game, associate, FALSE);
 
@@ -5410,6 +5895,9 @@ lib_take_from_multiple_common (scr_gameref_t game, scr_bool is_except)
   else if (references == 0)
     return TRUE;
 
+  /* Note single-object takes; the backend prints their prefix raw pre-4.0. */
+  lib_take_from_single_named = !is_except && references == 1;
+
   /* Validate the associate object to take from. */
   if (!lib_take_from_is_valid (game, associate))
     return TRUE;
@@ -5425,6 +5913,8 @@ lib_take_from_multiple_common (scr_gameref_t game, scr_bool is_except)
                               &references);
   if (objects > 0 || references > 0)
     lib_take_from_object_backend (game, associate);
+  else if (lib_take_from_unseen (game, associate))
+    lib_take_from_unseen_refusal (game, associate);
   else
     lib_take_from_empty (game, associate, is_except);
 
@@ -6003,7 +6493,11 @@ lib_wear_backend (scr_gameref_t game)
       game->multiple_references[object] = FALSE;
     }
 
-  has_printed |= lib_print_object_list (game, has_printed, list, " and ", '.',
+  /* The 4.0 Runner ends this with "!"; pre-4.0 Runners build the wear-path
+     variant of this message without the "!" (run400 47BE3C/4638FE vs
+     run380 432FCB). */
+  has_printed |= lib_print_object_list (game, has_printed, list, " and ",
+                                        lib_is_version_400 (game) ? '!' : '.',
                                         "You are already wearing ",
                                         "I am already wearing ",
                                         "%player% is already wearing ");
@@ -6419,6 +6913,26 @@ lib_cmd_open_object (scr_gameref_t game)
       return TRUE;
 
     case OBJ_CLOSED:
+      /*
+       * The 4.0 Runner only opens a dynamic object the player is holding
+       * (or wearing, possibly nested in a carried container): its open
+       * handler (Proc_19_3, loc_4757CA) allows the open when the object
+       * is static Or Proc_21_46 (held-or-worn, recursive) passes, and
+       * otherwise answers "<I am> not carrying <the object>!".  The 3.8
+       * and 3.9 handlers have no such test.
+       */
+      if (lib_is_version_400 (game)
+          && !obj_is_static (game, object)
+          && !obj_indirectly_held_by_player (game, object))
+        {
+          lib_print_response_object (game,
+                                     "You are not carrying ",
+                                     "I am not carrying ",
+                                     "%player% is not carrying ",
+                                     object, "!\n");
+          return TRUE;
+        }
+
       pf_buffer_string (filter,
                         lib_select_response (game,
                                              "You open ",
@@ -6479,6 +6993,19 @@ lib_cmd_close_object (scr_gameref_t game)
   switch (openness)
     {
     case OBJ_OPEN:
+      /* Same 4.0-only carrying gate as in lib_cmd_open_object above. */
+      if (lib_is_version_400 (game)
+          && !obj_is_static (game, object)
+          && !obj_indirectly_held_by_player (game, object))
+        {
+          lib_print_response_object (game,
+                                     "You are not carrying ",
+                                     "I am not carrying ",
+                                     "%player% is not carrying ",
+                                     object, "!\n");
+          return TRUE;
+        }
+
       lib_print_response_object (game,
                                  "You close ",
                                  "I close ",
@@ -6528,7 +7055,8 @@ lib_attempt_key_acquisition (scr_gameref_t game, scr_int object)
     return;
 
   /* If the object is not seen or available, reject the attempt. */
-  if (!(gs_object_seen (game, object)
+  if (!((gs_object_seen (game, object)
+         || !lib_matcher_requires_seen (game))
         && obj_indirectly_in_room (game, object, gs_playerroom (game))))
     return;
 
@@ -6746,7 +7274,15 @@ lib_lock_backend (scr_gameref_t game, const lib_lock_verb_t *verb,
             lib_attempt_key_acquisition (game, key);
           }
 
-        if (gs_object_position (game, key) != OBJ_HELD_PLAYER)
+        /*
+         * The runner asks whether the key is indirectly held by the player,
+         * not whether it sits in the hands: a key that is worn, or stowed in
+         * an open bag being carried, unlocks perfectly well.  Provenance
+         * relies on this -- its walkthrough wears the brass key so that the
+         * cave's forced "drop all" can't take it away, then unlocks the
+         * wooden chest while still only wearing it.
+         */
+        if (!obj_indirectly_held_by_player (game, key))
           {
             if (with_key)
               {
@@ -6932,13 +7468,27 @@ lib_npc_reply_to (scr_gameref_t game, scr_int npc, scr_int topic)
 }
 
 
+static const scr_char *lib_ask_format_subject (scr_gameref_t game);
+
 /*
+ * lib_ask_npc_about()
  * lib_cmd_ask_npc_about()
+ * lib_cmd_talk_to_npc_about()
  *
  * Converse with NPC.
+ *
+ * `talk to X about Y` enters the same branch as `ask X about Y` in every
+ * Runner -- its guard is `c("ask") Or c("talk to")` (run370 loc_4387F4,
+ * run380 loc_440683, run390 loc_4597F2, run400 loc_47F8F7) -- but it differs
+ * in what happens when no topic matches.  The ask-format hint branch runs
+ * just before it and has already claimed the response line for anything
+ * containing `talk to` (see lib_cmd_talk_to_npc), and the no-topic reply is
+ * written only over an empty one (run380 loc_4409E8).  A matching topic does
+ * overwrite it (loc_440918), so the topic still wins where there is one.
  */
-scr_bool
-lib_cmd_ask_npc_about (scr_gameref_t game)
+static scr_bool
+lib_ask_npc_about (scr_gameref_t game, const scr_char *verb,
+                   scr_bool hint_when_silent)
 {
   const scr_filterref_t filter = gs_get_filter (game);
   const scr_var_setref_t vars = gs_get_vars (game);
@@ -6948,7 +7498,7 @@ lib_cmd_ask_npc_about (scr_gameref_t game)
   scr_bool found, default_found, is_ambiguous;
 
   /* Get the referenced npc, and if none, consider complete. */
-  npc = lib_disambiguate_npc (game, "ask", &is_ambiguous);
+  npc = lib_disambiguate_npc (game, verb, &is_ambiguous);
   if (npc == -1)
     return is_ambiguous;
 
@@ -7014,6 +7564,14 @@ lib_cmd_ask_npc_about (scr_gameref_t game)
   else if (default_found && lib_npc_reply_to (game, npc, default_topic))
     return TRUE;
 
+  /* No topic matched, so `talk to` falls back on the hint it displaced. */
+  if (hint_when_silent)
+    {
+      lib_print_wrapped_npc (game, "Use the format \"ask ",
+                             npc, lib_ask_format_subject (game));
+      return TRUE;
+    }
+
   /* NPC has no response. */
   pf_new_sentence (filter);
   lib_print_npc_np (game, npc);
@@ -7023,6 +7581,18 @@ lib_cmd_ask_npc_about (scr_gameref_t game)
                                 " does not respond to my question.\n",
                                 " does not respond to %player%'s question.\n"));
   return TRUE;
+}
+
+scr_bool
+lib_cmd_ask_npc_about (scr_gameref_t game)
+{
+  return lib_ask_npc_about (game, "ask", FALSE);
+}
+
+scr_bool
+lib_cmd_talk_to_npc_about (scr_gameref_t game)
+{
+  return lib_ask_npc_about (game, "talk to", TRUE);
 }
 
 
@@ -7080,6 +7650,159 @@ lib_check_put_in_recursion (scr_gameref_t game,
 
 
 /*
+ * lib_put_named_filter()
+ * lib_put_all_filter()
+ *
+ * The two universes a "put" command draws its objects from.  They are not
+ * the same set, and the Runners' put handlers make the split explicitly.
+ *
+ * Naming an object (run400's Proc_19_41, selection code at loc_46E01F on)
+ * resolves it with the general object matcher and then applies *no* position
+ * test whatsoever before running it -- the execute loop's guard reads
+ * "var_AC(obj) = 1 Or (<all-matched> And ...)", so a named object arrives
+ * pre-approved.  Anything the player can see in the room is therefore fair
+ * game, and 4.0 quietly picks it up first (see lib_put_implicit_take).  The
+ * pre-4.0 handlers are stricter but still not held-only: run390's
+ * loc_461C66 accepts field22 = 0 (held) or field22 = the worn marker, so a
+ * worn object may be put down without removing it first.
+ *
+ * "all", by contrast, is held-only in every version: the candidate loop
+ * takes objects with field26 = 0 And field24 = 0, i.e. lying in the player's
+ * hands, never worn and never inside anything.  That narrower set is what
+ * "put all in X" and "put all except Y on Z" range over, and it is also what
+ * the "You are not holding ..." leftover report is phrased for.
+ */
+static scr_bool
+lib_put_named_filter (scr_gameref_t game, scr_int object)
+{
+  if (obj_is_static (game, object))
+    return FALSE;
+
+  if (lib_is_version_400 (game))
+    return obj_indirectly_in_room (game, object, gs_playerroom (game));
+
+  return gs_object_position (game, object) == OBJ_HELD_PLAYER
+         || gs_object_position (game, object) == OBJ_WORN_PLAYER;
+}
+
+static scr_bool
+lib_put_all_filter (scr_gameref_t game, scr_int object, scr_int associate)
+{
+  return !obj_is_static (game, object)
+         && gs_object_position (game, object) == OBJ_HELD_PLAYER
+         && object != associate;
+}
+
+
+/*
+ * lib_put_implicit_take()
+ *
+ * Version 4.0 only.  Having accepted a named object that the player is not
+ * carrying, run400 acquires it before the put proper, printing "(Taking the
+ * lamp first)" and then continuing as if it had always been held (loc_46E295
+ * on).  The announcement uses Proc_21_31_448710 with mode 0, the definite
+ * "the lamp" form, and unlike the key-acquisition wording it carries no
+ * "from the chest" clause.  The string appears in run400 and in no earlier
+ * Runner, so this is squarely a 4.0 addition.  run400 guards the take with
+ * a task match on the unmodified player line (Proc_19_35_453C50 on
+ * MemVar_49428C); the caller has just run the equivalent test, so there is
+ * nothing left to check here.
+ *
+ * The announcement is unconditional -- it is printed before the acquisition
+ * is attempted, not after it succeeds -- and the acquisition itself is the
+ * ordinary take, capacity limits and all.  Measured in run400 with a full
+ * rucksack (Provenance, 2026-08-23):
+ *
+ *   > put raincoat in rucksack
+ *   (Taking the raincoat first)
+ *   The raincoat is too heavy for you to carry at the moment.  You are not
+ *   holding the raincoat.
+ *
+ * Returns TRUE if the put may go ahead, FALSE if the object has been moved
+ * to the multiple references for that "You are not holding ..." report.
+ * *printed says whether anything was written, so the caller can join the
+ * report to it with the usual two spaces.
+ */
+static scr_bool
+lib_put_implicit_take (scr_gameref_t game, scr_int object, scr_int target,
+                       scr_bool *printed)
+{
+  const scr_filterref_t filter = gs_get_filter (game);
+  scr_bool is_portable;
+
+  if (!lib_is_version_400 (game))
+    return TRUE;
+
+  if (obj_indirectly_held_by_player (game, object))
+    return TRUE;
+
+  /*
+   * The acquisition is skipped when the object already sits at the
+   * destination -- run400 tests obj.global_46 <> var_92, the container or
+   * surface it is about to be moved to -- and the put executor's own
+   * possession test then refuses it (Proc_21_46_44615C at loc_465EED).  So
+   * "put ball on marker" with the ball already on the marker answers "You
+   * are not holding the golf ball.", which is what the multiple-reference
+   * report is phrased for.
+   */
+  if (gs_object_parent (game, object) == target
+      && (gs_object_position (game, object) == OBJ_IN_OBJECT
+          || gs_object_position (game, object) == OBJ_ON_OBJECT))
+    {
+      game->object_references[object] = FALSE;
+      game->multiple_references[object] = TRUE;
+      return FALSE;
+    }
+
+  pf_buffer_string (filter, "(Taking ");
+  lib_print_object_np (game, object);
+  pf_buffer_string (filter, " first)\n");
+
+  if (lib_object_too_heavy (game, object, &is_portable))
+    {
+      lib_new_clause (game, FALSE);
+      lib_print_object_np (game, object);
+      pf_buffer_string (filter,
+                        lib_select_plurality (game, object, " is", " are"));
+      pf_buffer_string (filter,
+                        lib_select_response (game,
+                                             " too heavy for you to carry",
+                                             " too heavy for me to carry",
+                                             " too heavy for %player% to carry"));
+      if (is_portable)
+        pf_buffer_string (filter, " at the moment");
+      pf_buffer_character (filter, '.');
+    }
+  else if (lib_object_too_large (game, object, &is_portable))
+    {
+      lib_new_clause (game, FALSE);
+      pf_buffer_string (filter,
+                        lib_select_response (game,
+                                             "Your hands are full",
+                                             "My hands are full",
+                                             "%player%'s hands are full"));
+      if (is_portable)
+        pf_buffer_string (filter, " at the moment");
+      pf_buffer_character (filter, '.');
+    }
+  else
+    {
+      /*
+       * The announcement ends its own line (run400 appends vbCrLf), so the
+       * put report that follows starts fresh rather than being joined on.
+       */
+      gs_object_player_get (game, object);
+      return TRUE;
+    }
+
+  game->object_references[object] = FALSE;
+  game->multiple_references[object] = TRUE;
+  *printed = TRUE;
+  return FALSE;
+}
+
+
+/*
  * lib_put_in_backend()
  *
  * Common backend handler for placing objects in containers.  Places all
@@ -7122,7 +7845,16 @@ lib_put_in_backend (scr_gameref_t game, scr_int container)
         {
           game->object_references[object] = FALSE;
           has_printed = TRUE;
+          continue;
         }
+
+      /* Version 4.0 picks up an object it has been asked to put down. */
+      {
+        scr_bool take_printed = FALSE;
+
+        lib_put_implicit_take (game, object, container, &take_printed);
+        has_printed |= take_printed;
+      }
     }
 
   /*
@@ -7280,21 +8012,21 @@ lib_put_in_backend (scr_gameref_t game, scr_int container)
  *
  * Helper functions for deciding if an object may be put in another this
  * context.  Returns TRUE if an object may be manipulated, FALSE otherwise.
+ * The named form is much the wider of the two; see lib_put_named_filter().
  */
 static scr_bool
 lib_put_in_filter (scr_gameref_t game, scr_int object, scr_int unused)
 {
   assert (unused == -1);
 
-  return !obj_is_static (game, object)
-         && gs_object_position (game, object) == OBJ_HELD_PLAYER;
+  return lib_put_named_filter (game, object);
 }
 
 static scr_bool
 lib_put_in_not_container_filter (scr_gameref_t game,
                                  scr_int object, scr_int container)
 {
-  return lib_put_in_filter (game, object, -1) && object != container;
+  return lib_put_all_filter (game, object, container);
 }
 
 
@@ -7593,7 +8325,16 @@ lib_put_on_backend (scr_gameref_t game, scr_int supporter)
         {
           game->object_references[object] = FALSE;
           has_printed = TRUE;
+          continue;
         }
+
+      /* Version 4.0 picks up an object it has been asked to put down. */
+      {
+        scr_bool take_printed = FALSE;
+
+        lib_put_implicit_take (game, object, supporter, &take_printed);
+        has_printed |= take_printed;
+      }
     }
 
   lib_move_backend (game, &LIB_PUT_ON_VERB, supporter, has_printed);
@@ -7606,21 +8347,21 @@ lib_put_on_backend (scr_gameref_t game, scr_int supporter)
  *
  * Helper functions for deciding if an object may be put on another this
  * context.  Returns TRUE if an object may be manipulated, FALSE otherwise.
+ * The named form is much the wider of the two; see lib_put_named_filter().
  */
 static scr_bool
 lib_put_on_filter (scr_gameref_t game, scr_int object, scr_int unused)
 {
   assert (unused == -1);
 
-  return !obj_is_static (game, object)
-         && gs_object_position (game, object) == OBJ_HELD_PLAYER;
+  return lib_put_named_filter (game, object);
 }
 
 static scr_bool
 lib_put_on_not_supporter_filter (scr_gameref_t game,
                                  scr_int object, scr_int supporter)
 {
-  return lib_put_on_filter (game, object, -1) && object != supporter;
+  return lib_put_all_filter (game, object, supporter);
 }
 
 
@@ -8040,11 +8781,12 @@ lib_battle_attack_with (scr_gameref_t game, const scr_char *verb,
   else
     {
       /*
-       * TODO Adrift uses "affective" [sic] here.  Should SCARIER be right, or
-       * bug-compatible?
+       * "affective" [sic] and the "!" are the Runner's: every Runner string
+       * table, run370 through run400, carries "I don't think X would be a
+       * very affective weapon!" verbatim (measured 2026-08-17).
        */
       lib_print_wrapped_object (game, "I don't think ",
-                                object, " would be a very effective weapon.\n");
+                                object, " would be a very affective weapon!\n");
     }
   return TRUE;
 }
@@ -8070,6 +8812,74 @@ scr_bool
 lib_cmd_attack_npc_with (scr_gameref_t game)
 {
   return lib_battle_attack_with (game, "attack", -1, TRUE);
+}
+
+/*
+ * lib_cmd_slap_*()
+ *
+ * `slap` is not a verb in any Runner's grammar.  It is a pre-parse text
+ * rewrite to `hit`, applied to the command line just after the game's own
+ * synonyms and alongside "everything" -> "all" and "except" -> "but":
+ *
+ *   run370 loc_43B430, run380 loc_441C50   change("slap", "hit")
+ *   run390 loc_45F246                      Replace("slap", "hit")
+ *   run400 loc_48A330                      Replace(" slap ", " hit ")
+ *
+ * 4.0's form is space-bounded on both sides, so a command that *begins*
+ * with `slap` is never rewritten.  That is why run400 answers `slap gizmo`
+ * with the "I'm afraid that I wasn't anticipating that particular input."
+ * a nonsense verb gets, while run390 gives it the combat dispatch (both
+ * measured live 2026-08-18, on easter.taf and The Town of Azra).  So these
+ * decline on 4.0 and behave as `hit` -- not `attack` -- everywhere else:
+ * `hit` carries battle attack index 2, `attack`/`kick` carry -1.
+ *
+ * `smack` and `strike` are synonyms at no version: neither literal occurs
+ * anywhere in run370.bas, run380.bas, run390 Form1.frm or run400.bas.
+ */
+static scr_bool
+lib_slap_declines (scr_gameref_t game)
+{
+  return lib_is_version_400 (game);
+}
+
+scr_bool
+lib_cmd_slap_npc (scr_gameref_t game)
+{
+  if (lib_slap_declines (game))
+    return FALSE;
+  return lib_cmd_hit_npc (game);
+}
+
+scr_bool
+lib_cmd_slap_npc_with (scr_gameref_t game)
+{
+  if (lib_slap_declines (game))
+    return FALSE;
+  return lib_cmd_hit_npc_with (game);
+}
+
+scr_bool
+lib_cmd_slap_object (scr_gameref_t game)
+{
+  if (lib_slap_declines (game))
+    return FALSE;
+  return lib_cmd_hit_object (game);
+}
+
+scr_bool
+lib_cmd_slap_other (scr_gameref_t game)
+{
+  if (lib_slap_declines (game))
+    return FALSE;
+  return lib_cmd_hit_other (game);
+}
+
+scr_bool
+lib_cmd_slap_what (scr_gameref_t game)
+{
+  if (lib_slap_declines (game))
+    return FALSE;
+  return lib_cmd_hit_what (game);
 }
 
 scr_bool
@@ -8522,7 +9332,8 @@ enum
 };
 enum
 { MOVE_SIT, MOVE_SIT_FLOOR,
-  MOVE_STAND, MOVE_STAND_FLOOR, MOVE_LIE, MOVE_LIE_FLOOR
+  MOVE_STAND, MOVE_STAND_FLOOR, MOVE_LIE, MOVE_LIE_FLOOR,
+  MOVE_GET_ON
 };
 
 /*
@@ -8546,6 +9357,7 @@ lib_stand_sit_lie (scr_gameref_t game, scr_int movement)
   switch (movement)
     {
     case MOVE_STAND:
+    case MOVE_GET_ON:
     case MOVE_SIT:
     case MOVE_LIE:
       {
@@ -8567,6 +9379,14 @@ lib_stand_sit_lie (scr_gameref_t game, scr_int movement)
                                                 "You can't stand on ",
                                                 "I can't stand on ",
                                                 "%player% can't stand on ");
+            movement_mask = OBJ_STANDABLE_MASK;
+            break;
+          case MOVE_GET_ON:
+            /*
+             * Same branch, no refusal of its own -- see lib_cmd_get_on_object.
+             */
+            disambiguate = "stand on";
+            cant_do_that = NULL;
             movement_mask = OBJ_STANDABLE_MASK;
             break;
           case MOVE_SIT:
@@ -8601,6 +9421,8 @@ lib_stand_sit_lie (scr_gameref_t game, scr_int movement)
         sit_lie_flags = prop_get_integer (bundle, "I<-sis", vt_key);
         if (!(sit_lie_flags & movement_mask))
           {
+            if (!cant_do_that)
+              return FALSE;
             pf_buffer_string (filter, cant_do_that);
             lib_print_object_np (game, object);
             pf_buffer_string (filter, ".\n");
@@ -8623,6 +9445,7 @@ lib_stand_sit_lie (scr_gameref_t game, scr_int movement)
   switch (movement)
     {
     case MOVE_STAND:
+    case MOVE_GET_ON:
       already_doing_that = lib_select_response (game,
                                             "You are already standing on ",
                                             "I am already standing on ",
@@ -8759,6 +9582,36 @@ lib_cmd_stand_on_object (scr_gameref_t game)
   return lib_stand_sit_lie (game, MOVE_STAND);
 }
 
+static scr_bool lib_has_get_off (scr_gameref_t game);
+
+/*
+ * lib_cmd_get_on_object()
+ *
+ * `get on X` is the stand-on branch of the 3.9/4.0 sitstand proc, entered by
+ * `c("stand") Or c("get up") Or c("get on")` and then `c("on") Or c("in")`
+ * (run400 loc_46B889, run390 loc_444565).  3.9 is also where takes() gained
+ * its matching `Not c("get on")` exclusion (run390 loc_4544C6, run400
+ * loc_47B68A), without which the take handler would eat the command first;
+ * neither literal exists anywhere in run370/run380, so this is 3.9+ only.
+ *
+ * It differs from `stand on X` in what happens when the object is not a
+ * standable one.  The refusal "You can't stand on X." is not produced by
+ * the sitstand proc at all -- it comes from a later generaltasks fallback
+ * keyed on the literal phrase "stand on" (run400 loc_489DDF), which `get on
+ * X` does not contain.  So a non-standable object leaves the whole turn
+ * unanswered and drops through to the generic unknown-verb reply: run390 on
+ * Microwave Man answers `get on glass` with "I don't understand what you
+ * want me to do with the shard of glass.", where `stand on glass` refuses.
+ * Declining here reproduces that fall-through.
+ */
+scr_bool
+lib_cmd_get_on_object (scr_gameref_t game)
+{
+  if (!lib_has_get_off (game))
+    return FALSE;
+  return lib_stand_sit_lie (game, MOVE_GET_ON);
+}
+
 scr_bool
 lib_cmd_stand_on_floor (scr_gameref_t game)
 {
@@ -8811,9 +9664,9 @@ lib_cmd_get_off_object (scr_gameref_t game)
   if (gs_playerparent (game) != object)
     {
       lib_print_response_object (game,
-                                 "You are not on ",
-                                 "I am not on ",
-                                 "%player% is not on ",
+                                 "You are not standing on ",
+                                 "I am not standing on ",
+                                 "%player% is not standing on ",
                                  object, "!\n");
       return TRUE;
     }
@@ -8831,19 +9684,33 @@ lib_cmd_get_off_object (scr_gameref_t game)
   return TRUE;
 }
 
+static scr_bool
+lib_has_get_off (scr_gameref_t game)
+{
+  return prop_get_taf_version (gs_get_bundle (game)) >= TAF_VERSION_390;
+}
+
 scr_bool
 lib_cmd_get_off (scr_gameref_t game)
 {
   const scr_filterref_t filter = gs_get_filter (game);
+
+  /*
+   * Not a verb before 3.9.  run380 on Wrecked answers a bare `get off` with
+   * "Take what?", i.e. the take handler, so decline and let the take family
+   * keep it.
+   */
+  if (!lib_has_get_off (game))
+    return FALSE;
 
   /* Reject the attempt if the player is not on anything. */
   if (gs_playerparent (game) == -1)
     {
       pf_buffer_string (filter,
                         lib_select_response (game,
-                                             "You are not on anything!\n",
-                                             "I am not on anything!\n",
-                                             "%player% is not on anything!\n"));
+                                             "You are not standing on anything!\n",
+                                             "I am not standing on anything!\n",
+                                             "%player% is not standing on anything!\n"));
       return TRUE;
     }
 
@@ -8859,6 +9726,23 @@ lib_cmd_get_off (scr_gameref_t game)
   gs_set_playerposition (game, 0);
   gs_set_playerparent (game, -1);
   return TRUE;
+}
+
+/*
+ * lib_cmd_get_down()
+ *
+ * `get down` shares the Runner's dismount branch with `get off`, so it is
+ * gated the same way: both arrived in 3.9.  Under run380, `get down` and
+ * `get off` are answered "Take what?" -- the take handler, not sitstand --
+ * and declining here reproduces that, because the take family is matched
+ * first and only falls through once it has failed to resolve an object.
+ */
+scr_bool
+lib_cmd_get_down (scr_gameref_t game)
+{
+  if (!lib_has_get_off (game))
+    return FALSE;
+  return lib_cmd_get_off (game);
 }
 
 
@@ -9207,11 +10091,9 @@ scr_bool
 lib_cmd_turns (scr_gameref_t game)
 {
   const scr_filterref_t filter = gs_get_filter (game);
-  scr_char buffer[32];
 
   pf_buffer_string (filter, "You have taken ");
-  snprintf (buffer, sizeof(buffer), "%ld", game->turns);
-  pf_buffer_string (filter, buffer);
+  pf_buffer_integer (filter, game->turns);
   if (game->turns == 1)
     pf_buffer_string (filter, " turn so far.\n");
   else
@@ -9226,14 +10108,10 @@ lib_cmd_score (scr_gameref_t game)
 {
   const scr_filterref_t filter = gs_get_filter (game);
   const scr_prop_setref_t bundle = gs_get_bundle (game);
-  scr_vartype_t vt_key[2];
   scr_int max_score, percent;
-  scr_char buffer[32];
 
   /* Get max score, and calculate score as a percentage. */
-  vt_key[0].string = "Globals";
-  vt_key[1].string = "MaxScore";
-  max_score = prop_get_integer (bundle, "I<-ss", vt_key);
+  max_score = prop_get_global_integer (bundle, "MaxScore");
   if (game->score > 0 && max_score > 0)
     percent = (game->score * 100) / max_score;
   else
@@ -9245,14 +10123,11 @@ lib_cmd_score (scr_gameref_t game)
                                          "Your score is ",
                                          "My score is ",
                                          "%player%'s score is "));
-  snprintf (buffer, sizeof(buffer), "%ld", game->score);
-  pf_buffer_string (filter, buffer);
+  pf_buffer_integer (filter, game->score);
   pf_buffer_string (filter, " out of a maximum of ");
-  snprintf (buffer, sizeof(buffer), "%ld", max_score);
-  pf_buffer_string (filter, buffer);
+  pf_buffer_integer (filter, max_score);
   pf_buffer_string (filter, ".  (");
-  snprintf (buffer, sizeof(buffer), "%ld", percent);
-  pf_buffer_string (filter, buffer);
+  pf_buffer_integer (filter, percent);
   pf_buffer_string (filter, "%)\n");
 
   game->is_admin = TRUE;
@@ -9458,6 +10333,32 @@ lib_cmd_profanity (scr_gameref_t game)
   return lib_print_message (game,
                             "I really don't think there's any need for language like"
                             " that!\n");
+}
+
+/*
+ * lib_cmd_profanity_390()
+ * lib_cmd_profanity_pre_400()
+ *
+ * Two words entered and left the Runner's swearing list.  `bugger` is in the
+ * 3.9 and 4.0 lists but in neither 3.7's nor 3.8's, and `bloody` is in
+ * 3.7/3.8/3.9 and gone from 4.0.  Where the word is not in that Runner's list
+ * these decline, so the input falls through to the rest of the grammar exactly
+ * as any other unrecognised word does.
+ */
+scr_bool
+lib_cmd_profanity_390 (scr_gameref_t game)
+{
+  if (prop_get_taf_version (gs_get_bundle (game)) < TAF_VERSION_390)
+    return FALSE;
+  return lib_cmd_profanity (game);
+}
+
+scr_bool
+lib_cmd_profanity_pre_400 (scr_gameref_t game)
+{
+  if (lib_is_version_400 (game))
+    return FALSE;
+  return lib_cmd_profanity (game);
 }
 
 scr_bool
@@ -9745,11 +10646,69 @@ lib_cmd_yes_or_no (scr_gameref_t game)
 
 
 /*
+ * lib_ask_format_subject()
+ * lib_ask_format_character()
+ *
+ * The ask-format hint spells its placeholders with angle brackets in 3.7 and
+ * with square ones from 3.8 on -- the only thing that changed about it in
+ * four Runner releases:
+ *
+ *   run370 loc_4387A0, loc_438BDC   "ask " & name & " about <subject>" & "."
+ *   run370 loc_43D782               "ask <character> about <subject>"
+ *   run380 loc_44062F, loc_440A6B   "ask " & name & " about [subject]" & "."
+ *   run380 loc_444219               "ask [character] about [subject]"
+ *   run390 loc_45976B / loc_45DA37, run400 loc_47F879 / loc_488D55: as 3.8.
+ */
+static const scr_char *
+lib_ask_format_subject (scr_gameref_t game)
+{
+  return prop_get_taf_version (gs_get_bundle (game)) >= TAF_VERSION_380
+         ? " about [subject]\".\n" : " about <subject>\".\n";
+}
+
+static const scr_char *
+lib_ask_format_character (scr_gameref_t game)
+{
+  return prop_get_taf_version (gs_get_bundle (game)) >= TAF_VERSION_380
+         ? "Use the format \"ask [character] about [subject]\".\n"
+         : "Use the format \"ask <character> about <subject>\".\n";
+}
+
+
+/*
  * lib_cmd_ask_npc()
  * lib_cmd_ask_object()
  * lib_cmd_ask_other()
+ * lib_cmd_talk_to_npc()
+ * lib_cmd_talk_to_npc_pre_390()
  *
  * Malformed and rhetorical question responses.
+ *
+ * `talk to X` and `speak to X` reach the same hint.  It is produced by the
+ * per-character pass, inside the block that a command only enters when it
+ * names the character (run380 loc_4401AA, `c(name) Or c(descriptor)`), by a
+ * branch whose guard is the one thing here that moved between releases:
+ *
+ *   run370 loc_438748, run380 loc_4405D7   c("talk") Or c("speak")
+ *   run390 loc_45973D, run400 loc_47F84A   c("talk to") Or c("speak to")
+ *
+ * So 3.7 and 3.8 answer a bare `talk bob` or `speak bob` with the hint and
+ * 3.9 and 4.0 do not -- there the bare word falls through to the
+ * generaltasks `c("talk")` rabblings line, which every Runner has
+ * (run400 loc_488DA2), and `speak` alone reaches nothing at all.
+ *
+ * `talk to X about Y` is different again: `c("ask") Or c("talk to")` guards
+ * the real conversation branch in all four (run370 loc_4387F4, run380
+ * loc_440683, run390 loc_4597F2, run400 loc_47F8F7), and it runs after the
+ * hint branch and overwrites it.  `speak to` is not in that list, so it only
+ * ever gets the hint.  See the grammar rows in scrunner.cpp.
+ *
+ * Not ported: the pre-parse rewrites of a command *beginning* `ask about `
+ * or `talk about ` into `ask <last named character> about ...` (run370
+ * loc_4380CF/loc_438185, run380 loc_43FF4F/loc_440005, run390 loc_459010/
+ * loc_4590E1, run400 loc_47F14C/loc_47F20F).  They need the Runner's
+ * "character most recently named by a command" register, which SCARE has no
+ * equivalent of.
  */
 scr_bool
 lib_cmd_ask_npc (scr_gameref_t game)
@@ -9764,8 +10723,33 @@ lib_cmd_ask_npc (scr_gameref_t game)
 
   /* Incomplete ask command, so offer help and return. */
   lib_print_wrapped_npc (game, "Use the format \"ask ",
-                         npc, " about [subject]\".\n");
+                         npc, lib_ask_format_subject (game));
   return TRUE;
+}
+
+scr_bool
+lib_cmd_talk_to_npc (scr_gameref_t game)
+{
+  scr_int npc;
+  scr_bool is_ambiguous;
+
+  /* Get the referenced npc, and if none, consider complete. */
+  npc = lib_disambiguate_npc (game, "talk to", &is_ambiguous);
+  if (npc == -1)
+    return is_ambiguous;
+
+  lib_print_wrapped_npc (game, "Use the format \"ask ",
+                         npc, lib_ask_format_subject (game));
+  return TRUE;
+}
+
+scr_bool
+lib_cmd_talk_to_npc_pre_390 (scr_gameref_t game)
+{
+  if (prop_get_taf_version (gs_get_bundle (game)) >= TAF_VERSION_390)
+    return FALSE;
+
+  return lib_cmd_talk_to_npc (game);
 }
 
 scr_bool
@@ -9792,8 +10776,7 @@ scr_bool
 lib_cmd_ask_other (scr_gameref_t game)
 {
   /* Incomplete ask command, so offer help and return. */
-  return lib_print_message (game,
-                            "Use the format \"ask [character] about [subject]\".\n");
+  return lib_print_message (game, lib_ask_format_character (game));
 }
 
 
@@ -10611,7 +11594,8 @@ lib_cmd_verb_object (scr_gameref_t game)
   for (index_ = 0; index_ < gs_object_count (game); index_++)
     {
       if (game->object_references[index_]
-          && gs_object_seen (game, index_)
+          && (gs_object_seen (game, index_)
+              || !lib_matcher_requires_seen (game))
           && obj_indirectly_in_room (game, index_, gs_playerroom (game)))
         {
           count++;

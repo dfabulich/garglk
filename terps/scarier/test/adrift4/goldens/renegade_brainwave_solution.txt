@@ -1,0 +1,25 @@
+open handbag
+drop handbag
+x Mary Quant handbag
+take gun
+west
+take crowbar
+east
+north
+west
+take cigar
+east
+south
+east
+give cigar to dummy
+in
+x stone sarcophagus
+take bone
+out
+west
+north
+open chapel
+in
+down
+in
+throw bone at curtain
