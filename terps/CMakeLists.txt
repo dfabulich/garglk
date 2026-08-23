@@ -436,7 +436,7 @@ int main()
         scarier/adrift5/a5run_sort.cpp scarier/adrift5/a5sb.cpp
         scarier/adrift5/a5sexpr.cpp scarier/adrift5/a5state.cpp
         scarier/adrift5/a5text.cpp scarier/adrift5/a5xml.cpp
-        scarier/mapdraw.cpp scarier/os_glk.cpp
+        scarier/mapdraw.cpp scarier/mapsvg.cpp scarier/os_glk.cpp
         scarier/scbattle.cpp scarier/scdebug.cpp scarier/scevents.cpp
         scarier/scexpr.cpp scarier/scgamest.cpp scarier/scinterf.cpp
         scarier/sclibrar.cpp scarier/sclocale.cpp scarier/scmap.cpp

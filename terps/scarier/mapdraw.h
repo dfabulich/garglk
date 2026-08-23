@@ -57,6 +57,19 @@ enum {
 #define MAP_N_DIRS 12
 extern const char *const map_dirs[MAP_N_DIRS];
 
+/* Up, Down, In and Out are the "badge" directions: they have no bearing on the
+   plan, so they are drawn as icons on the room box rather than as compass
+   connectors.  They are contiguous in the enum, which MAP_BADGE exploits to
+   index per-badge arrays. */
+#define MAP_N_BADGES 4
+#define MAP_BADGE(dir) ((dir) - DIR_UP)
+
+static inline int
+map_is_badge_dir (int dir)
+{
+  return dir >= DIR_UP && dir <= DIR_OUT;
+}
+
 /* The runner's node defaults (FileIO.vb only writes Width/Height when they
    differ from these).  The ADRIFT 4 mapper adopts them too, so a room box is
    the same size whichever engine placed it. */
@@ -103,8 +116,9 @@ typedef struct map_node_s {
                                  but still draws connectors to a seen hidden
                                  room (Map.vb:1156 DrawNode vs DrawLinks)    */
   /* Location has a Movement in this badge direction (FileIO.vb bHasIn/Out/
-     Up/Down).  Far-end In/Out icons gate on these, not on duplex. */
-  unsigned char has_in, has_out, has_up, has_down;
+     Up/Down), indexed by MAP_BADGE.  Far-end In/Out icons gate on these, not
+     on duplex. */
+  unsigned char has_badge[MAP_N_BADGES];
   map_link_t *links;
   int n_links;
 } map_node_t;
@@ -168,6 +182,24 @@ enum {
   MAP_SCHEME_DERIVED = 1
 };
 extern void map_set_colour_scheme (int scheme);
+
+/* Resolved colours for the current scheme (room/here fills are already
+   blended onto the canvas background so SVG can paint them opaque).
+   Builds the default black-on-white hierarchy if the host has not called
+   map_set_palette yet. */
+typedef struct map_palette_s {
+  unsigned int background;
+  unsigned int room_fill;
+  unsigned int room_stroke;
+  unsigned int here_fill;
+  unsigned int here_stroke;
+  unsigned int label;
+  unsigned int here_label;
+  unsigned int link;
+  unsigned int stub;
+} map_palette_t;
+
+extern void map_get_palette (map_palette_t *out);
 
 /* What the renderer needs to know about the run.  Keeping this a callback
    table is what lets the map be drawn from the headless harness (and diffed)
@@ -244,5 +276,31 @@ extern const char *map_hit (const map_t *map, const map_view_t *view,
    exactly as DoWalk does. */
 extern int map_walk_step (const map_view_t *view, const char *from,
                           const char *to);
+
+/* SVG for glk_map_present_svg (gestalt_Map). Caller frees with
+   map_svg_free(). Returns NULL when there is nothing useful to show. */
+typedef struct map_svg_hyperlink_s {
+  unsigned int id;            /* 1-based; matches glk_maphyperlink_t.id */
+  char *key;                  /* room key (heap); for the terp, not Glk */
+  char *label;                /* UTF-8 display name (heap); may be NULL */
+  int npoints;                /* 4 for room boxes */
+  int *xy;                    /* npoints*2 document-space ints: x0,y0,... */
+} map_svg_hyperlink_t;
+
+typedef struct map_svg_s {
+  char *svg;
+  int focus_left;
+  int focus_top;
+  unsigned int focus_width;
+  unsigned int focus_height;
+  int origin_x;
+  int origin_y;
+  map_svg_hyperlink_t *hyperlinks;
+  int nhyperlinks;
+} map_svg_t;
+
+extern map_svg_t *map_render_svg (const map_t *map, const map_view_t *view,
+                                  const char *player_key);
+extern void map_svg_free (map_svg_t *svg);
 
 #endif /* MAPDRAW_H */

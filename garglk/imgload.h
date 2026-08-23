@@ -34,4 +34,8 @@ struct ImageLoadError : public std::runtime_error {
 Canvas<4> gli_load_image_jpeg(const std::vector<unsigned char> &buf);
 Canvas<4> gli_load_image_png(const std::vector<unsigned char> &buf);
 
+/* Raw PNG/JPEG bytes from the Blorb (or PIC file), for map display without
+   re-encoding decoded pixels (preserves embedded colour profile). */
+bool gli_picture_copy_raw(unsigned long id, std::vector<unsigned char> &buf, glui32 &chunktype);
+
 #endif

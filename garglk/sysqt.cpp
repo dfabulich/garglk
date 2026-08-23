@@ -105,6 +105,9 @@
 #include "garversion.h"
 #include "glk.h"
 #include "garglk.h"
+#include "map.h"
+
+void gli_map_set_game_window(QMainWindow *win);
 
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 #define HAS_QT6
@@ -167,6 +170,7 @@ void garglk::winwarning(const std::string &title, const std::string &msg)
 
 void winexit()
 {
+    gli_map_ui_shutdown();
     gli_exit(0);
 }
 
@@ -824,6 +828,7 @@ void wininit()
 void winopen()
 {
     window = new garglk::Window();
+    gli_map_set_game_window(window);
 
     // Qt window geometry is in logical pixels, but the metrics here are
     // in physical pixels (see gli_backingscalefactor in wininit()), so
