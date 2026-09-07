@@ -988,6 +988,13 @@ void wininit()
     app = new QApplication(argc, argv);
     QApplication::setApplicationVersion(GARGOYLE_VERSION);
 
+#ifdef Q_OS_MAC
+    // IPC children must not appear as separate Dock apps (parent owns windows).
+    if (qEnvironmentVariableIsSet("GARGLK_IPC_CHILD")) {
+        garglk_mac_set_dock_policy(true);
+    }
+#endif
+
     // The render buffer is sized in physical pixels (see
     // updateBufferSize()), so the zoom must be derived from the same
     // scale, or glyphs get rasterized at 1x into a 2x buffer and come
@@ -1056,6 +1063,13 @@ void winopen()
         wintitle();
         return;
     }
+
+#ifdef Q_OS_MAC
+    // IPC launch failed; restore a normal Dock presence if we hid earlier.
+    if (qEnvironmentVariableIsSet("GARGLK_IPC_CHILD")) {
+        garglk_mac_set_dock_policy(false);
+    }
+#endif
 
     window = new garglk::Window();
 
@@ -1156,6 +1170,13 @@ bool windark()
 
 std::optional<std::string> garglk::winfontpath(const std::string &filename)
 {
+#ifdef Q_OS_MAC
+    // macOS app bundles keep fonts in Contents/Resources/Fonts (see
+    // gargoyle_osx.sh / launchmac.mm). Match Cocoa's GARGLK_RESOURCES layout.
+    if (const char *resources = std::getenv("GARGLK_RESOURCES"); resources != nullptr && resources[0] != '\0') {
+        return Format("{}/Fonts/{}", resources, filename);
+    }
+#endif
     return Format("{}/{}", QCoreApplication::applicationDirPath().toStdString(), filename);
 }
 
@@ -1168,6 +1189,11 @@ std::string garglk::windatadir()
     // case that's <binary>/../share/gargoyle).
     auto dir = QCoreApplication::applicationDirPath().toStdString();
     return Format("{}/../share/gargoyle", dir);
+#elif defined(Q_OS_MAC)
+    if (const char *resources = std::getenv("GARGLK_RESOURCES"); resources != nullptr && resources[0] != '\0') {
+        return resources;
+    }
+    return ".";
 #elif defined(GARGLK_CONFIG_DATADIR)
     return GARGLK_CONFIG_DATADIR;
 #else

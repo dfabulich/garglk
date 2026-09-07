@@ -415,7 +415,7 @@ else()
 endif()
 
 if(APPLE)
-    target_sources(garglk-common PRIVATE fontmac.mm)
+    target_sources(garglk-common PRIVATE fontmac.mm macutil.mm)
 elseif(UNIX)
     # Fontconfig support isn't included with CMake till 3.14, so use pkg-config.
     find_package(PkgConfig REQUIRED)

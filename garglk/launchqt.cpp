@@ -76,6 +76,18 @@ bool garglk::winterp(const std::string &exe, const std::vector<std::string> &fla
 #else
         interpreter_dir = QCoreApplication::applicationDirPath();
 #endif
+#ifdef Q_OS_MAC
+        // macOS app bundles install interpreters in Contents/PlugIns
+        // (gargoyle_osx.sh; matches launchmac.mm's builtInPlugInsPath).
+        // Prefer that when the requested interpreter exists there.
+        QDir plugins_dir(QCoreApplication::applicationDirPath());
+        if (plugins_dir.cd("../PlugIns")) {
+            QString plugin_exe = plugins_dir.absoluteFilePath(QString::fromStdString(exe));
+            if (QFileInfo::exists(plugin_exe)) {
+                interpreter_dir = plugins_dir.absolutePath();
+            }
+        }
+#endif
     }
 
     QString argv0 = QDir(interpreter_dir).absoluteFilePath(exe.c_str());
@@ -88,7 +100,21 @@ bool garglk::winterp(const std::string &exe, const std::vector<std::string> &fla
 
     if (garglk::session_is_parent()) {
         // IPC session: launch non-blocking; the parent owns windows.
-        if (!QProcess::startDetached(argv0, args)) {
+        QProcess proc;
+        proc.setProgram(argv0);
+        proc.setArguments(args);
+        auto env = QProcessEnvironment::systemEnvironment();
+        env.insert("GARGLK_LAUNCHER", QCoreApplication::applicationFilePath());
+        // Mark children so they can hide from the macOS Dock while still
+        // creating a QApplication for Qt event processing.
+        env.insert("GARGLK_IPC_CHILD", "1");
+#ifdef Q_OS_MAC
+        if (auto resources = qgetenv("GARGLK_RESOURCES"); !resources.isEmpty()) {
+            env.insert("GARGLK_RESOURCES", QString::fromUtf8(resources));
+        }
+#endif
+        proc.setProcessEnvironment(env);
+        if (!proc.startDetached()) {
             garglk::winmsg("Could not start interpreter " + argv0.toStdString());
             return false;
         }
@@ -101,6 +127,11 @@ bool garglk::winterp(const std::string &exe, const std::vector<std::string> &fla
     // So interpreters can re-launch Gargoyle (File → Open / Open Recent).
     auto env = QProcessEnvironment::systemEnvironment();
     env.insert("GARGLK_LAUNCHER", QCoreApplication::applicationFilePath());
+#ifdef Q_OS_MAC
+    if (auto resources = qgetenv("GARGLK_RESOURCES"); !resources.isEmpty()) {
+        env.insert("GARGLK_RESOURCES", QString::fromUtf8(resources));
+    }
+#endif
     proc.setProcessEnvironment(env);
 
     proc.start(argv0, args);
@@ -259,6 +290,14 @@ int main(int argc, char **argv)
 
     QApplication::setApplicationName("gargoyle");
     QApplication::setApplicationVersion(GARGOYLE_VERSION);
+
+#ifdef Q_OS_MAC
+    // Match launchmac.mm: point interpreters/fontload at Contents/Resources.
+    QDir resources_dir(QCoreApplication::applicationDirPath());
+    if (resources_dir.cd("../Resources")) {
+        qputenv("GARGLK_RESOURCES", resources_dir.absolutePath().toUtf8());
+    }
+#endif
 
     garglk::theme::init();
 

@@ -1241,6 +1241,10 @@ void winclipreceive();
 void fontload();
 void fontunload();
 
+#ifdef __APPLE__
+void garglk_mac_set_dock_policy(bool hide);
+#endif
+
 bool giblorb_copy_resource(glui32 usage, glui32 resnum, glui32 &type, std::vector<unsigned char> &buf);
 
 std::shared_ptr<picture_t> gli_picture_load(unsigned long id);
