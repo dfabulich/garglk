@@ -4,6 +4,8 @@
 
 #include "ipclientqt.h"
 
+#include <QKeyEvent>
+#include <QKeySequence>
 #include <QLocalSocket>
 #include <QtGlobal>
 
@@ -118,8 +120,28 @@ void handle_message(const ipc::Message &msg)
 
 void handle_key(std::uint32_t modifiers, std::int32_t key, const QString &text)
 {
-    Qt::KeyboardModifiers modmasked = static_cast<Qt::KeyboardModifiers>(modifiers)
+    Qt::KeyboardModifiers mods = static_cast<Qt::KeyboardModifiers>(modifiers);
+    Qt::KeyboardModifiers modmasked = mods
             & (Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier);
+
+    // Match platform Cut/Copy/Paste (e.g. Ctrl+X/C/V), including synthetic
+    // EventKey messages from the session Edit menu.
+    QKeyEvent key_event(QEvent::KeyPress, key, mods, text);
+    if (key_event.matches(QKeySequence::Cut)) {
+        gli_store_input_selection();
+        winclipsend();
+        gli_delete_input_selection();
+        return;
+    }
+    if (key_event.matches(QKeySequence::Copy)) {
+        gli_store_input_selection();
+        winclipsend();
+        return;
+    }
+    if (key_event.matches(QKeySequence::Paste)) {
+        winclipreceive();
+        return;
+    }
 
     static const std::map<std::pair<Qt::KeyboardModifiers, int>, std::function<void()>> keys = {
         {{kRealCtrl, Qt::Key_A}, []{ gli_input_handle_key(keycode_Home); }},
