@@ -363,7 +363,7 @@ void winclipstore(const std::vector<glui32> &text)
     cliptext = QString::fromUcs4(reinterpret_cast<const char32_t *>(text.data()), text.size());
 }
 
-static void winclipsend(QClipboard::Mode mode)
+static void clipsend(QClipboard::Mode mode)
 {
     if (cliptext.isEmpty()) {
         return;
@@ -374,12 +374,22 @@ static void winclipsend(QClipboard::Mode mode)
     clipboard->setText(cliptext, mode);
 }
 
-static void winclipreceive(QClipboard::Mode mode)
+static void clipreceive(QClipboard::Mode mode)
 {
     QClipboard *clipboard = QGuiApplication::clipboard();
     QString text = clipboard->text(mode);
 
     handle_input(text, true);
+}
+
+void winclipsend()
+{
+    clipsend(QClipboard::Clipboard);
+}
+
+void winclipreceive()
+{
+    clipreceive(QClipboard::Clipboard);
 }
 
 garglk::Window::Window() :
@@ -409,7 +419,19 @@ garglk::Window::Window() :
     });
 
     if (gli_conf_menu_bar) {
-        setup_file_menu(this, m_settings, launch_gargoyle, [] { gli_exit(0); });
+        setup_menus(this, m_settings, launch_gargoyle,
+                [this] { close(); },
+                [] { gli_exit(0); },
+                [] {
+                    gli_store_input_selection();
+                    winclipsend();
+                    gli_delete_input_selection();
+                },
+                [] {
+                    gli_store_input_selection();
+                    winclipsend();
+                },
+                [] { winclipreceive(); });
     } else {
         menuBar()->hide();
     }
@@ -686,9 +708,9 @@ void garglk::View::keyPressEvent(QKeyEvent *event)
     refresh_needed = true;
 
     static const std::map<QKeySequence::StandardKey, std::function<void()>> sequences = {
-        {QKeySequence::Cut,                []{ gli_store_input_selection(); winclipsend(QClipboard::Clipboard); gli_delete_input_selection(); }},
-        {QKeySequence::Copy,               []{ gli_store_input_selection(); winclipsend(QClipboard::Clipboard); }},
-        {QKeySequence::Paste,              []{ winclipreceive(QClipboard::Clipboard); }},
+        {QKeySequence::Cut,                []{ gli_store_input_selection(); winclipsend(); gli_delete_input_selection(); }},
+        {QKeySequence::Copy,               []{ gli_store_input_selection(); winclipsend(); }},
+        {QKeySequence::Paste,              []{ winclipreceive(); }},
         {QKeySequence::MoveToPreviousWord, []{ gli_input_handle_key(keycode_SkipWordLeft); }},
         {QKeySequence::MoveToNextWord,     []{ gli_input_handle_key(keycode_SkipWordRight); }},
         {QKeySequence::SelectPreviousChar, []{ gli_input_handle_key(keycode_SelectLeft); }},
@@ -886,7 +908,7 @@ void garglk::View::mousePressEvent(QMouseEvent *event)
         gli_input_handle_click(std::round(event->pos().x() * dpr), std::round(event->pos().y() * dpr),
                 count_click(event->pos()));
     } else if (event->button() == Qt::MiddleButton) {
-        winclipreceive(QClipboard::Selection);
+        clipreceive(QClipboard::Selection);
     }
 
     event->accept();
@@ -902,7 +924,7 @@ void garglk::View::mouseReleaseEvent(QMouseEvent *event)
     if (event->button() == Qt::LeftButton) {
         gli_copyselect = false;
         unsetCursor();
-        winclipsend(QClipboard::Selection);
+        clipsend(QClipboard::Selection);
     }
 
     event->accept();

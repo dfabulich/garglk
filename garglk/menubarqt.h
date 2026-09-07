@@ -16,13 +16,17 @@
 
 namespace garglk {
 
-// Shared File menu used by the IPC session host and the non-IPC
-// interpreter window fallback.
+// Shared menus used by the IPC session host and the non-IPC interpreter
+// window fallback.
 GARGLK_API void note_recent_file(QSettings *settings, const QString &path);
 GARGLK_API QString browse_for_game(QWidget *parent = nullptr);
-GARGLK_API void setup_file_menu(QMainWindow *window, QSettings *settings,
+GARGLK_API void setup_menus(QMainWindow *window, QSettings *settings,
         const std::function<void(const QString &)> &open_game,
-        const std::function<void()> &on_exit);
+        const std::function<void()> &on_close,
+        const std::function<void()> &on_exit,
+        const std::function<void()> &on_cut,
+        const std::function<void()> &on_copy,
+        const std::function<void()> &on_paste);
 
 }
 

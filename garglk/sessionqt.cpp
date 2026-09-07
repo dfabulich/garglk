@@ -258,9 +258,17 @@ GameWindow::GameWindow(QLocalSocket *socket, QWidget *parent) :
     setCentralWidget(m_view);
     m_socket->setParent(this);
     if (gli_conf_menu_bar) {
-        setup_file_menu(this, m_settings,
+        auto send_edit_key = [this](int key) {
+            send(ipc::Msg::EventKey,
+                    ipc::make_event_key(Qt::ControlModifier, key, {}));
+        };
+        setup_menus(this, m_settings,
                 [](const QString &game) { Session::instance().open_game(game); },
-                [] { Session::instance().quit_all(); });
+                [this] { close(); },
+                [] { Session::instance().quit_all(); },
+                [send_edit_key] { send_edit_key(Qt::Key_X); },
+                [send_edit_key] { send_edit_key(Qt::Key_C); },
+                [send_edit_key] { send_edit_key(Qt::Key_V); });
     } else {
         menuBar()->hide();
     }

@@ -1235,6 +1235,8 @@ void winrepaint(int x0, int y0, int x1, int y1);
 bool windark();
 void winexit();
 void winclipstore(const std::vector<glui32> &text);
+void winclipsend();
+void winclipreceive();
 
 void fontload();
 void fontunload();

@@ -5,6 +5,7 @@
 #include "menubarqt.h"
 
 #include <QAction>
+#include <QApplication>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QKeySequence>
@@ -50,6 +51,18 @@ void populate_recent_menu(QMenu *recent_menu, QSettings *settings,
             open_game(path);
         });
     }
+}
+
+void show_about(QWidget *parent)
+{
+    auto version = QApplication::applicationVersion();
+    if (version.isEmpty()) {
+        version = "unknown";
+    }
+    QMessageBox::about(parent, "About Gargoyle",
+            QString("<h3>Gargoyle</h3>"
+                    "<p>Version %1</p>"
+                    "<p>An interactive fiction player</p>").arg(version));
 }
 
 }
@@ -113,9 +126,13 @@ QString browse_for_game(QWidget *parent)
     return QFileDialog::getOpenFileName(parent, "Open", "", filter_string, nullptr, options);
 }
 
-void setup_file_menu(QMainWindow *window, QSettings *settings,
+void setup_menus(QMainWindow *window, QSettings *settings,
         const std::function<void(const QString &)> &open_game,
-        const std::function<void()> &on_exit)
+        const std::function<void()> &on_close,
+        const std::function<void()> &on_exit,
+        const std::function<void()> &on_cut,
+        const std::function<void()> &on_copy,
+        const std::function<void()> &on_paste)
 {
     auto *file_menu = window->menuBar()->addMenu("&File");
 
@@ -134,6 +151,11 @@ void setup_file_menu(QMainWindow *window, QSettings *settings,
     };
     QObject::connect(recent_menu, &QMenu::aboutToShow, window, populate);
     populate();
+
+    file_menu->addSeparator();
+
+    auto *close_action = file_menu->addAction("&Close", window, on_close);
+    close_action->setShortcut(QKeySequence::Close);
 
     file_menu->addSeparator();
 
@@ -160,6 +182,20 @@ void setup_file_menu(QMainWindow *window, QSettings *settings,
     } else {
         exit_action->setShortcuts(quit);
     }
+
+    auto *edit_menu = window->menuBar()->addMenu("&Edit");
+    auto *cut_action = edit_menu->addAction("Cu&t", window, on_cut);
+    cut_action->setShortcut(QKeySequence::Cut);
+    auto *copy_action = edit_menu->addAction("&Copy", window, on_copy);
+    copy_action->setShortcut(QKeySequence::Copy);
+    auto *paste_action = edit_menu->addAction("&Paste", window, on_paste);
+    paste_action->setShortcut(QKeySequence::Paste);
+
+    auto *help_menu = window->menuBar()->addMenu("&Help");
+    auto *about_action = help_menu->addAction("&About Gargoyle", window, [window] {
+        show_about(window);
+    });
+    about_action->setMenuRole(QAction::AboutRole);
 }
 
 }
