@@ -1243,6 +1243,10 @@ void fontunload();
 
 #ifdef __APPLE__
 void garglk_mac_set_dock_policy(bool hide);
+void garglk_mac_set_windows_menu(void *ns_menu);
+void garglk_mac_miniaturize_key_window();
+void garglk_mac_zoom_key_window();
+void garglk_mac_arrange_in_front();
 #endif
 
 bool giblorb_copy_resource(glui32 usage, glui32 resnum, glui32 &type, std::vector<unsigned char> &buf);

@@ -31,3 +31,30 @@ void garglk_mac_set_dock_policy(bool hide)
         [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
     }
 }
+
+void garglk_mac_set_windows_menu(void *ns_menu)
+{
+    auto *menu = static_cast<NSMenu *>(ns_menu);
+    // Calling setWindowsMenu: again on the same NSMenu makes AppKit append
+    // another copy of Fill / Center / Move & Resize / … each time the app
+    // is reactivated. Only (re)register when the menu instance changes.
+    if (menu == nullptr || [NSApp windowsMenu] == menu) {
+        return;
+    }
+    [NSApp setWindowsMenu:menu];
+}
+
+void garglk_mac_miniaturize_key_window()
+{
+    [[NSApp keyWindow] performMiniaturize:nil];
+}
+
+void garglk_mac_zoom_key_window()
+{
+    [[NSApp keyWindow] performZoom:nil];
+}
+
+void garglk_mac_arrange_in_front()
+{
+    [NSApp arrangeInFront:nil];
+}

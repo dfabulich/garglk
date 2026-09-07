@@ -9,6 +9,7 @@
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QGuiApplication>
 #include <QKeySequence>
 #include <QMenu>
 #include <QMenuBar>
@@ -16,6 +17,7 @@
 #include <QStandardPaths>
 #include <QStringList>
 #include <QVector>
+#include <QWindow>
 
 #include "garglk.h"
 
@@ -214,6 +216,39 @@ void setup_menus(QMainWindow *window, QSettings *settings,
     copy_action->setShortcut(QKeySequence::Copy);
     auto *paste_action = edit_menu->addAction("&Paste", window, on_paste);
     paste_action->setShortcut(QKeySequence::Paste);
+
+#ifdef Q_OS_MAC
+    // macOS only: register as NSApp.windowsMenu so AppKit maintains the
+    // window list (and injects related system items). Re-register when this
+    // window is focused, because each QMainWindow has its own menu bar.
+    auto *window_menu = window->menuBar()->addMenu("Window");
+
+    auto *minimize_action = window_menu->addAction("Minimize", window, [] {
+        garglk_mac_miniaturize_key_window();
+    });
+    minimize_action->setShortcut(Qt::CTRL | Qt::Key_M);
+
+    window_menu->addAction("Zoom", window, [] {
+        garglk_mac_zoom_key_window();
+    });
+
+    window_menu->addSeparator();
+
+    window_menu->addAction("Bring All to Front", window, [] {
+        garglk_mac_arrange_in_front();
+    });
+
+    auto register_windows_menu = [window_menu] {
+        garglk_mac_set_windows_menu(window_menu->toNSMenu());
+    };
+    register_windows_menu();
+    QObject::connect(qApp, &QGuiApplication::focusWindowChanged, window,
+            [window, register_windows_menu](QWindow *focus) {
+                if (focus != nullptr && focus == window->windowHandle()) {
+                    register_windows_menu();
+                }
+            });
+#endif
 
     auto *help_menu = window->menuBar()->addMenu("&Help");
     auto *about_action = help_menu->addAction("&About Gargoyle", window, [window] {
